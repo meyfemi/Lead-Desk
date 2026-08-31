@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""
+Lead Desk — a local dashboard for the Krediview lead pipeline.
+
+Stdlib only, to match the rest of the project. Serves a single-page UI plus a
+small JSON API over the lead CSVs, and shells out to the existing scripts in
+scripts/ for the work they already do (Apify search, website enrichment, send).
+
+    python3 ui/server.py [--port 8765] [--no-browser]
+"""
+import argparse
+import json
+import mimetypes
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import traceback
+import uuid
+import webbrowser
+from datetime import date
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+import store  # noqa: E402
+from send_email import send_email as mailtrap_send  # noqa: E402
+
+ROOT = Path(__file__).parent.parent
+STATIC = Path(__file__).parent / "static"
+SCRIPTS = ROOT / "scripts"
+
+# Background jobs (Apify runs, batch sends, /find-leads). id -> record.
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+# Live subprocesses for cancellable jobs. job id -> Popen.
+PROCS = {}
+
+
+def new_job(kind, title):
+    job_id = uuid.uuid4().hex[:12]
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "id": job_id, "kind": kind, "title": title, "state": "running",
+            "log": [], "result": None, "error": None,
+            "started": date.today().isoformat(),
+        }
+    return job_id
+
+
+def job_log(job_id, line):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job:
+            job["log"].append(line)
+
+
+def job_done(job_id, result=None, error=None):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job:
+            job["state"] = "error" if error else "done"
+            job["result"] = result
+            job["error"] = error
+        PROCS.pop(job_id, None)
+
+
+def job_stop(job_id):
+    """Cancel a running subprocess job (a /find-leads run can be long)."""
+    proc = PROCS.get(job_id)
+    if not proc:
+        return False
+    try:
+        proc.send_signal(signal.SIGINT)
+    except Exception:
+        return False
+    with JOBS_LOCK:
+        if JOBS.get(job_id):
+            JOBS[job_id]["stopped"] = True
+    job_log(job_id, "— stopped by user —")
+    return True
+
+
+def run_in_thread(fn, *args):
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+# ── Work performed on behalf of the UI ──────────────────────────────────────
+
+def do_apify_search(job_id, location, count):
+    """Run scripts/apify_search.py and hold the candidates for review."""
+    out_path = ROOT / "leads" / f".apify_{job_id}.json"
+    cmd = [sys.executable, str(SCRIPTS / "apify_search.py"),
+           "--location", location, "--count", str(count), "--output", str(out_path)]
+    job_log(job_id, f"$ {' '.join(cmd[1:])}")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+        for line in proc.stdout:
+            job_log(job_id, line.rstrip())
+        proc.wait()
+        if proc.returncode != 0:
+            job_done(job_id, error=f"apify_search.py exited {proc.returncode}")
+            return
+
+        items = json.loads(out_path.read_text(encoding="utf-8"))
+        out_path.unlink(missing_ok=True)
+
+        target = store.LEADS_DIR / f"{store.slugify_location(location)}_leads.csv"
+        known = {r["Company Name"].strip().lower() for r in store.read(target.name)}
+        candidates, dupes = [], 0
+        for item in items:
+            row = store.from_apify(item, location)
+            if not row["Company Name"]:
+                continue
+            if row["Company Name"].strip().lower() in known:
+                dupes += 1
+                continue
+            candidates.append(row)
+
+        job_log(job_id, f"{len(candidates)} new candidates, {dupes} already in file")
+        job_done(job_id, result={"file": target.name, "candidates": candidates,
+                                 "duplicates": dupes, "location": location})
+    except Exception as exc:
+        job_log(job_id, traceback.format_exc().strip().splitlines()[-1])
+        job_done(job_id, error=str(exc))
+
+
+FIND_LEADS_TAIL = {
+    "research": (
+        "Stop after Step 5. Do NOT send any emails — skip Steps 6 and 7 entirely. "
+        "Leave every finished lead at Status \"Ready to Send\" so it can be reviewed "
+        "and sent from the dashboard."
+    ),
+    "full": "Run the full workflow, including Steps 6 and 7 (sending and follow-ups).",
+}
+
+
+def summarize_stream_event(event):
+    """Turn one claude --output-format stream-json event into a readable log line."""
+    kind = event.get("type")
+
+    if kind == "system" and event.get("subtype") == "init":
+        return f"· session {event.get('session_id', '')[:8]} started"
+
+    if kind == "assistant":
+        lines = []
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    lines.append(text)
+            elif block.get("type") == "tool_use":
+                inp = block.get("input", {})
+                detail = inp.get("command") or inp.get("file_path") or inp.get("url") or ""
+                detail = str(detail).replace("\n", " ")[:110]
+                lines.append(f"⚙ {block.get('name')}  {detail}".rstrip())
+        return "\n".join(lines)
+
+    if kind == "result":
+        if event.get("is_error"):
+            return f"✗ {event.get('result', 'run failed')}"
+        cost = event.get("total_cost_usd")
+        turns = event.get("num_turns")
+        bits = [b for b in (f"{turns} turns" if turns else "",
+                            f"${cost:.2f}" if cost else "") if b]
+        return "· finished" + (f" ({', '.join(bits)})" if bits else "")
+
+    return ""
+
+
+def do_find_leads(job_id, location, count, mode):
+    """Run the /find-leads workflow headlessly through the claude CLI."""
+    if not shutil.which("claude"):
+        job_done(job_id, error="The `claude` CLI is not on PATH — install Claude Code to run this.")
+        return
+
+    prompt = (
+        f"/find-leads\n\n"
+        f"Location: {location}\n"
+        f"Lead count: {count}\n\n"
+        f"Step 1 is already answered by the two values above — use them and do not "
+        f"call AskUserQuestion.\n"
+        f"{FIND_LEADS_TAIL.get(mode, FIND_LEADS_TAIL['research'])}"
+    )
+
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json", "--verbose",
+        "--allowedTools", "Bash", "Read", "Write", "Edit",
+    ]
+
+    job_log(job_id, f"$ claude -p /find-leads  ({location}, {count} leads, {mode})")
+    if mode == "research":
+        job_log(job_id, "· research only — no emails will be sent")
+    else:
+        job_log(job_id, "· full run — this WILL send outreach emails")
+
+    try:
+        proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        PROCS[job_id] = proc
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                summary = summarize_stream_event(json.loads(line))
+            except json.JSONDecodeError:
+                summary = line
+            with JOBS_LOCK:
+                stopped = bool(JOBS.get(job_id, {}).get("stopped"))
+            # Once cancelled, the CLI's own error result is just noise.
+            if summary and not (stopped and summary.startswith("✗")):
+                job_log(job_id, summary)
+        proc.wait()
+        with JOBS_LOCK:
+            stopped = bool(JOBS.get(job_id, {}).get("stopped"))
+        if stopped:
+            job_done(job_id, result={"location": location, "mode": mode, "stopped": True})
+            return
+        if proc.returncode != 0:
+            job_done(job_id, error=f"claude exited {proc.returncode}")
+            return
+        job_done(job_id, result={"location": location, "mode": mode})
+    except Exception as exc:
+        job_done(job_id, error=str(exc))
+
+
+def do_enrich(job_id, filename, lead_ids):
+    """Run scripts/scrape_website.py over leads to fill in email / CEO / phone."""
+    rows = store.read(filename)
+    updated = []
+    for lead_id in lead_ids:
+        if lead_id >= len(rows):
+            continue
+        row = rows[lead_id]
+        url = (row.get("Company URL") or "").strip()
+        name = row.get("Company Name", "")
+        if not url:
+            job_log(job_id, f"– {name}: no website on file")
+            continue
+        job_log(job_id, f"→ {name}: scraping {url}")
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPTS / "scrape_website.py"), url],
+                capture_output=True, text=True, timeout=90)
+            data = json.loads(proc.stdout or "{}")
+        except Exception as exc:
+            job_log(job_id, f"✗ {name}: {exc}")
+            continue
+
+        if data.get("error"):
+            job_log(job_id, f"✗ {name}: {data['error']}")
+            continue
+
+        patch = {}
+        if not store.has_email(row) and data.get("emails"):
+            patch["Company Email"] = data["emails"][0]
+        if row.get("Company CEO", "") in ("", "Not identified") and data.get("ceo_names"):
+            patch["Company CEO"] = data["ceo_names"][0]
+        if row.get("Company Phone", "") in ("", "Not found") and data.get("phones"):
+            patch["Company Phone"] = data["phones"][0]
+        if patch.get("Company Email") and row.get("Status") == store.STATUS_NO_EMAIL:
+            patch["Status"] = store.STATUS_DRAFT
+
+        if patch:
+            store.update(filename, lead_id, patch)
+            updated.append({"id": lead_id, "name": name, "patch": patch})
+            job_log(job_id, f"✓ {name}: " + ", ".join(f"{k} → {v}" for k, v in patch.items()))
+        else:
+            job_log(job_id, f"· {name}: nothing new found")
+
+    job_done(job_id, result={"updated": updated})
+
+
+def send_one(filename, lead_id, stage, dry_run):
+    """Send a lead's first mail (stage 0) or a follow-up (stage 1/2)."""
+    env = store.load_env()
+    api_key = env.get("MAILTRAP_API_KEY")
+    from_email = env.get("MAIL_FROM_ADDRESS", "info@krediview.com")
+
+    rows = store.read(filename)
+    row = rows[lead_id]
+    name = row["Company Name"]
+    email = (row.get("Company Email") or "").strip()
+
+    if not store.has_email(row):
+        return {"ok": False, "name": name, "detail": "no email address on file"}
+
+    if stage == 0:
+        subject = row.get("Email Subject", "")
+        body = row.get("First Mail Body", "")
+        next_status = store.STATUS_SENT
+    else:
+        subject = row.get("Email Subject", "")
+        if subject and not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
+        body = row.get(f"Followup {stage} Body", "")
+        next_status = store.STATUS_FU1 if stage == 1 else store.STATUS_FU2
+
+    if not subject.strip() or not body.strip():
+        return {"ok": False, "name": name, "detail": "subject or body is empty"}
+
+    if dry_run:
+        return {"ok": True, "name": name, "email": email, "dry_run": True,
+                "detail": "dry run — nothing sent"}
+
+    if not api_key:
+        return {"ok": False, "name": name, "detail": "MAILTRAP_API_KEY not in .env"}
+
+    ceo = row.get("Company CEO", "")
+    to_name = ceo.split()[0] if ceo and ceo != "Not identified" else name
+    ok, result = mailtrap_send(email, to_name, subject, body, from_email,
+                               "Femi | Krediview", api_key)
+
+    if ok:
+        store.update(filename, lead_id, {
+            "Status": next_status,
+            "Date Contacted": date.today().isoformat(),
+        })
+        return {"ok": True, "name": name, "email": email, "detail": "sent"}
+
+    store.update(filename, lead_id, {"Status": store.STATUS_FAILED})
+    detail = result.get("error") or json.dumps(result)[:200]
+    return {"ok": False, "name": name, "email": email, "detail": detail}
+
+
+def do_batch_send(job_id, filename, lead_ids, stage, dry_run):
+    sent, failed, log_lines = [], [], []
+    for lead_id in lead_ids:
+        try:
+            outcome = send_one(filename, lead_id, stage, dry_run)
+        except Exception as exc:
+            outcome = {"ok": False, "name": f"lead {lead_id}", "detail": str(exc)}
+        if not outcome["ok"]:
+            mark = "✗ FAILED"
+        elif outcome.get("dry_run"):
+            mark = "· DRY   "
+        else:
+            mark = "✓ SENT  "
+        line = f"{mark} {outcome['name']} <{outcome.get('email', '—')}> — {outcome['detail']}"
+        job_log(job_id, line)
+        log_lines.append(line)
+        (sent if outcome["ok"] else failed).append(outcome["name"])
+
+    summary = f"Summary: {len(sent)} sent, {len(failed)} failed" + (" (dry run)" if dry_run else "")
+    job_log(job_id, summary)
+    if log_lines and not dry_run:
+        store.append_log(log_lines + [summary])
+    job_done(job_id, result={"sent": sent, "failed": failed, "dry_run": dry_run})
+
+
+# ── HTTP layer ──────────────────────────────────────────────────────────────
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "LeadDesk"
+
+    def log_message(self, fmt, *args):
+        pass  # keep the console clean; the UI shows what matters
+
+    # -- helpers --
+    def _json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def _static(self, name):
+        path = (STATIC / Path(name).name)
+        if not path.exists():
+            self._json({"error": "not found"}, 404)
+            return
+        data = path.read_bytes()
+        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # -- routes --
+    def do_GET(self):
+        url = urlparse(self.path)
+        path, query = url.path, parse_qs(url.query)
+        try:
+            if path in ("/", "/index.html"):
+                return self._static("index.html")
+            if path.startswith("/static/"):
+                return self._static(path[len("/static/"):])
+
+            if path == "/api/bootstrap":
+                files = store.list_files()
+                current = query.get("file", [None])[0] or (files[0]["file"] if files else None)
+                rows = store.read(current) if current else []
+                return self._json({
+                    "files": files,
+                    "file": current,
+                    "statuses": store.ALL_STATUSES,
+                    "leads": rows,
+                    "stats": store.stats(rows),
+                    "timeline": store.timeline(rows),
+                    "followups": store.followups_due(rows),
+                    "today": date.today().isoformat(),
+                    "mail_configured": bool(store.load_env().get("MAILTRAP_API_KEY")),
+                    "apify_configured": bool(store.load_env().get("APIFY_API_KEY")),
+                    "claude_cli": bool(shutil.which("claude")),
+                })
+
+            if path == "/api/log":
+                return self._json({"log": store.read_log()})
+
+            if path.startswith("/api/jobs/"):
+                job_id = path.rsplit("/", 1)[-1]
+                with JOBS_LOCK:
+                    job = JOBS.get(job_id)
+                if not job:
+                    return self._json({"error": "no such job"}, 404)
+                return self._json(job)
+
+            return self._json({"error": "not found"}, 404)
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+        except Exception as exc:
+            traceback.print_exc()
+            return self._json({"error": str(exc)}, 500)
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        try:
+            data = self._body()
+            filename = data.get("file")
+
+            if path == "/api/lead/update":
+                lead = store.update(filename, int(data["id"]), data.get("patch", {}))
+                return self._json({"lead": lead})
+
+            if path == "/api/send":
+                ids = [int(i) for i in data.get("ids", [])]
+                stage = int(data.get("stage", 0))
+                dry_run = bool(data.get("dry_run"))
+                label = "follow-up" if stage else "first mail"
+                job_id = new_job("send", f"Sending {label} to {len(ids)} lead(s)")
+                run_in_thread(do_batch_send, job_id, filename, ids, stage, dry_run)
+                return self._json({"job": job_id})
+
+            if path == "/api/enrich":
+                ids = [int(i) for i in data.get("ids", [])]
+                job_id = new_job("enrich", f"Enriching {len(ids)} lead(s) from their websites")
+                run_in_thread(do_enrich, job_id, filename, ids)
+                return self._json({"job": job_id})
+
+            if path == "/api/discover":
+                location = (data.get("location") or "").strip()
+                count = max(1, min(200, int(data.get("count") or 10)))
+                if not location:
+                    return self._json({"error": "location is required"}, 400)
+                job_id = new_job("discover", f"Searching Google Maps in {location}")
+                run_in_thread(do_apify_search, job_id, location, count)
+                return self._json({"job": job_id})
+
+            if path == "/api/find-leads":
+                location = (data.get("location") or "").strip()
+                count = max(1, min(200, int(data.get("count") or 10)))
+                mode = data.get("mode") if data.get("mode") in ("research", "full") else "research"
+                if not location:
+                    return self._json({"error": "location is required"}, 400)
+                job_id = new_job("findleads", f"/find-leads in {location}")
+                run_in_thread(do_find_leads, job_id, location, count, mode)
+                return self._json({"job": job_id})
+
+            if path == "/api/jobs/stop":
+                return self._json({"stopped": job_stop(data.get("id", ""))})
+
+            if path == "/api/import":
+                target = data.get("target_file")
+                rows = data.get("rows", [])
+                added = store.append(target, rows)
+                return self._json({"added": len(added), "file": Path(target).name})
+
+            return self._json({"error": "not found"}, 404)
+        except (ValueError, IndexError) as exc:
+            return self._json({"error": str(exc)}, 400)
+        except Exception as exc:
+            traceback.print_exc()
+            return self._json({"error": str(exc)}, 500)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Lead Desk dashboard")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    url = f"http://{args.host}:{args.port}"
+    print(f"\n  Lead Desk running at {url}")
+    print("  Ctrl-C to stop\n")
+    if not args.no_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Stopped.")
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()

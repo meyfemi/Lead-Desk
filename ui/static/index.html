@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead Desk — Krediview</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233b53d4'/><text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>K</text></svg>">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">K</div>
+        <div>
+          <div class="brand-name">Lead Desk</div>
+          <div class="brand-sub">Krediview outreach</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <div class="nav-label">Pipeline</div>
+        <button data-view="overview"><span class="ico">◱</span> Overview</button>
+        <button data-view="leads"><span class="ico">☰</span> Leads <span class="pill" id="pill-leads">0</span></button>
+        <button data-view="followups"><span class="ico">↻</span> Follow-ups <span class="pill" id="pill-fu">0</span></button>
+        <div class="nav-label" style="margin-top:14px">Sourcing</div>
+        <button data-view="discover"><span class="ico">⌕</span> Discover</button>
+        <button data-view="activity"><span class="ico">▤</span> Activity</button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <label class="field" style="margin:0 8px 10px">
+          <span>Lead file</span>
+          <select id="file-select"></select>
+        </label>
+        <div class="env-row"><span class="dot" id="dot-apify"></span> Apify key</div>
+        <div class="env-row"><span class="dot" id="dot-mail"></span> Mailtrap key</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Overview</h1>
+          <div class="sub" id="page-sub"></div>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn" id="btn-refresh">↻ Refresh</button>
+      </header>
+      <div class="view" id="view"></div>
+    </main>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
