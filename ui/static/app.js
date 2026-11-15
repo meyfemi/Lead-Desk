@@ -2,7 +2,8 @@
 
 const S = {
   files: [], file: null, leads: [], stats: null, timeline: [], followups: [],
-  statuses: [], today: '', mail: false, apify: false, claudeCli: false,
+  statuses: [], today: '', mail: false, apify: false, claudeCli: false, claudeKey: false,
+  identity: { company_name: '', default_location: '', default_categories: [] },
   view: 'overview', query: '', filter: 'all', selection: new Set(),
   openLead: null, job: null, jobPoll: null, candidates: null,
 };
@@ -50,7 +51,8 @@ async function load(file) {
     files: d.files, file: d.file, leads: d.leads, stats: d.stats,
     timeline: d.timeline, followups: d.followups, statuses: d.statuses,
     today: d.today, mail: d.mail_configured, apify: d.apify_configured,
-    claudeCli: d.claude_cli,
+    claudeCli: d.claude_cli, claudeKey: d.claude_key_configured,
+    identity: d.identity || S.identity,
   });
   S.selection = new Set([...S.selection].filter((i) => i < S.leads.length));
   render();
@@ -64,6 +66,18 @@ const TITLES = {
   discover: ['Discover', 'Find new businesses via Apify Google Maps'],
   activity: ['Activity', 'Job output and the send log'],
 };
+
+/* Company name from .env drives the title, sidebar and favicon initial. */
+function renderBrand() {
+  const name = (S.identity.company_name || '').trim();
+  const initial = (name || 'L').charAt(0).toUpperCase();
+  document.title = name ? `Lead Desk — ${name}` : 'Lead Desk';
+  $('#brand-mark').textContent = initial;
+  $('#brand-sub').textContent = name ? `${name} outreach` : 'Outreach';
+  $('#favicon').href = 'data:image/svg+xml,' + encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='#3b53d4'/>`
+    + `<text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>${initial}</text></svg>`);
+}
 
 function go(view) {
   S.view = view;
@@ -80,6 +94,8 @@ function render() {
   $('#pill-fu').textContent = S.followups.length;
   $('#dot-apify').className = `dot ${S.apify ? 'on' : 'off'}`;
   $('#dot-mail').className = `dot ${S.mail ? 'on' : 'off'}`;
+  $('#dot-claude').className = `dot ${S.claudeKey ? 'on' : 'off'}`;
+  renderBrand();
 
   document.querySelectorAll('#nav button').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === S.view));
@@ -319,6 +335,9 @@ function viewDiscover() {
     </div>` : '';
 
   const fl = S.job && S.job.kind === 'findleads' && S.job.state === 'running';
+  const defLoc = S.identity.default_location || '';
+  const defCats = (S.identity.default_categories || []).join(', ');
+  const canFindLeads = S.claudeCli && S.claudeKey;
 
   return `
     <div class="card" style="margin-bottom:14px">
@@ -327,7 +346,7 @@ function viewDiscover() {
       <div class="card-body">
         <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
           <label class="field" style="margin:0;flex:1;min-width:180px"><span>Location</span>
-            <input type="text" id="fl-loc" placeholder="Lagos, Nigeria" value="Lagos, Nigeria"></label>
+            <input type="text" id="fl-loc" placeholder="City, Country" value="${esc(defLoc)}"></label>
           <label class="field" style="margin:0;width:110px"><span>Leads</span>
             <input type="number" id="fl-cnt" value="10" min="1" max="200"></label>
           <label class="field" style="margin:0;width:230px"><span>Scope</span>
@@ -335,15 +354,20 @@ function viewDiscover() {
               <option value="research">Research &amp; draft only</option>
               <option value="full">Research, draft and send</option>
             </select></label>
-          <button class="btn primary" id="run-findleads" ${fl || !S.claudeCli ? 'disabled' : ''}
+          <button class="btn primary" id="run-findleads" ${fl || !canFindLeads ? 'disabled' : ''}
             style="margin-bottom:0">${fl ? '<span class="spinner"></span> Running…' : 'Run /find-leads'}</button>
         </div>
+        <label class="field" style="margin:12px 0 0"><span>Business categories to search</span>
+          <input type="text" id="fl-cats" placeholder="e.g. dentist, gym, car wash" value="${esc(defCats)}"></label>
         <p class="hint" style="margin:14px 0 0">
-          Searches, scrapes each website, writes company-specific outreach copy and files
-          every lead into the CSV — the same workflow as typing <span class="kbd">/find-leads</span>
-          in Claude Code. Expect 15–40 minutes. <b>Research &amp; draft</b> stops before sending
-          and leaves the leads at “Ready to Send” for you to review here.
+          Comma-separated. Each category becomes a Google Maps search in the location; blank
+          uses <span class="kbd">DEFAULT_CATEGORIES</span> from .env. The run searches, scrapes
+          each website, writes company-specific outreach copy and files every lead into the
+          CSV — the same workflow as typing <span class="kbd">/find-leads</span> in Claude Code.
+          Expect 15–40 minutes. <b>Research &amp; draft</b> stops before sending and leaves the
+          leads at “Ready to Send” for you to review here.
           ${S.claudeCli ? '' : '<br><span style="color:var(--red)">The <b>claude</b> CLI was not found on PATH.</span>'}
+          ${S.claudeKey ? '' : '<br><span style="color:var(--red)">ANTHROPIC_API_KEY is missing from .env — required to run /find-leads from here.</span>'}
         </p>
       </div>
     </div>
@@ -353,14 +377,16 @@ function viewDiscover() {
         <div class="card-head"><h2>Search only</h2></div>
         <div class="card-body">
           <label class="field"><span>Location</span>
-            <input type="text" id="loc" placeholder="Lagos, Nigeria" value="Lagos, Nigeria"></label>
+            <input type="text" id="loc" placeholder="City, Country" value="${esc(defLoc)}"></label>
+          <label class="field"><span>Business categories</span>
+            <input type="text" id="cats" placeholder="e.g. dentist, gym, car wash" value="${esc(defCats)}"></label>
           <label class="field"><span>Target lead count</span>
             <input type="number" id="cnt" value="20" min="1" max="200"></label>
           <button class="btn primary" id="run-search" ${running || !S.apify ? 'disabled' : ''}>
             ${running ? '<span class="spinner"></span> Searching…' : 'Run Apify search'}</button>
           ${S.apify ? '' : '<p class="hint" style="margin-top:12px;color:var(--red)">APIFY_API_KEY is missing from .env</p>'}
           <p class="hint" style="margin-top:14px">
-            Searches ten SME sectors across the location via Google Maps. A run usually takes
+            Runs one Google Maps search per category in the location. A run usually takes
             5–15 minutes. Results land here for review before anything is written to the CSV.</p>
         </div>
       </div>
@@ -628,21 +654,23 @@ function wire() {
 
   bind('#run-search', async () => {
     const location = $('#loc', v).value.trim();
+    const categories = $('#cats', v).value.trim();
     const count = Number($('#cnt', v).value);
     if (!location) return toast('Enter a location', 'err');
     S.candidates = null;
-    startJob('/api/discover', { location, count });
+    startJob('/api/discover', { location, count, categories });
   });
 
   bind('#run-findleads', () => {
     const location = $('#fl-loc', v).value.trim();
+    const categories = $('#fl-cats', v).value.trim();
     const count = Number($('#fl-cnt', v).value);
     const mode = $('#fl-mode', v).value;
     if (!location) return toast('Enter a location', 'err');
     if (mode === 'full' && !confirm(
       `Run /find-leads for ${count} leads in ${location} AND send the outreach emails?\n\n`
       + 'Real emails go out at the end of the run without a further prompt.')) return;
-    startJob('/api/find-leads', { location, count, mode });
+    startJob('/api/find-leads', { location, count, mode, categories });
   });
 
   bind('#stop-job', async () => {

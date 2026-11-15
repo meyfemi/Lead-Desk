@@ -21,9 +21,9 @@ at `http://127.0.0.1:8765`, with the Claude Code CLI set up to run the `/find-le
 | **Python 3.10 or newer** | Required | Runs the dashboard and every script. The project uses only Python's standard library, so there is no `requirements.txt`. |
 | **certifi** (a small Python package) | Strongly recommended | Lets the Apify and website-scraping scripts check HTTPS certificates. Without it they still run, but with certificate checks switched off. |
 | **curl** | Required for sending email | Emails go to Mailtrap through `curl`. It is already built into Windows 10/11 and macOS. |
-| **`.env` file with API keys** | Required | `APIFY_API_KEY` for lead search, `MAILTRAP_API_KEY` and `MAIL_FROM_ADDRESS` for sending. |
+| **`.env` file** | Required | Company identity (`COMPANY_NAME`, `SENDER_NAME`, `MAIL_FROM_ADDRESS`), defaults, and the keys: `APIFY_API_KEY` for lead search, `MAILTRAP_API_KEY` for sending, `ANTHROPIC_API_KEY` for the dashboard's `/find-leads` button. Start from `.env.example`; see [CUSTOMIZING.md](CUSTOMIZING.md). |
 | **Claude Code CLI** | Required for `/find-leads` | Researches each company and writes the outreach emails. Needed both for typing `/find-leads` and for the dashboard's **Run the full workflow** button. See [Part 3](#part-3--set-up-the-claude-code-cli-both). |
-| **Claude account** | Required for `/find-leads` | A paid Claude plan (Pro, Max, Team or Enterprise) or a Claude Console account. The free Claude.ai plan doesn't include Claude Code. |
+| **Claude Console API key** | Required for the dashboard's `/find-leads` | Put it in `.env` as `ANTHROPIC_API_KEY`. The dashboard passes it to Claude Code so each install pays through its own account. Typing `/find-leads` in a terminal can use this key or a claude.ai login (Pro, Max, Team or Enterprise). |
 | **Git for Windows** | Recommended, Windows only | Gives Claude Code a Bash shell, which is what the `/find-leads` steps are written for. |
 
 Before you start, have your API keys to hand. The easiest source is the `.env` file on the
@@ -31,7 +31,8 @@ Mac that already runs this project. Otherwise:
 
 - **Apify:** Apify Console → Settings → API & Integrations → copy your API token.
 - **Mailtrap:** Mailtrap → Settings → API Tokens. `MAIL_FROM_ADDRESS` must be on a domain
-  you have verified in Mailtrap (currently `info@krediview.com`).
+  you have verified in Mailtrap.
+- **Claude:** console.anthropic.com → Settings → API keys → create a key.
 
 ---
 
@@ -137,13 +138,19 @@ get a version number, you're done. If not, your Windows 10 is too old, so run Wi
 
 If you copied the folder in Part 1, `.env` is already in place. Skip to W6.
 
-To create it by hand, open the project folder in **VS Code**, create a new file called `.env`
-in the top-level folder and paste:
+To create it by hand, open the project folder in **VS Code**, copy `.env.example` to a new
+file called `.env` in the top-level folder, and fill in every value:
 
 ```
+COMPANY_NAME=Your Company
+COMPANY_TAGLINE=One line about what you do        (optional)
+SENDER_NAME=Your first name
+MAIL_FROM_ADDRESS=you@yourcompany.com             (verified in Mailtrap)
+DEFAULT_LOCATION=City, Country
+DEFAULT_CATEGORIES=restaurant, clinic, law firm   (comma-separated)
 APIFY_API_KEY=your-apify-token
 MAILTRAP_API_KEY=your-mailtrap-token
-MAIL_FROM_ADDRESS=info@krediview.com
+ANTHROPIC_API_KEY=your-claude-console-key
 ```
 
 > Don't use Notepad for this. It often saves the file as `.env.txt`, and the dashboard won't
@@ -221,13 +228,23 @@ macOS includes curl, so this should just print a version.
 
 If you copied the folder in Part 1, `.env` is already there. Skip to M5.
 
-To create it by hand, open the project folder in VS Code, create a file called `.env` in the
-top-level folder and paste:
+To create it by hand, copy `.env.example` to `.env` in the top-level folder and fill in
+every value:
+
+```bash
+cp .env.example .env
+```
 
 ```
+COMPANY_NAME=Your Company
+COMPANY_TAGLINE=One line about what you do        (optional)
+SENDER_NAME=Your first name
+MAIL_FROM_ADDRESS=you@yourcompany.com             (verified in Mailtrap)
+DEFAULT_LOCATION=City, Country
+DEFAULT_CATEGORIES=restaurant, clinic, law firm   (comma-separated)
 APIFY_API_KEY=your-apify-token
 MAILTRAP_API_KEY=your-mailtrap-token
-MAIL_FROM_ADDRESS=info@krediview.com
+ANTHROPIC_API_KEY=your-claude-console-key
 ```
 
 #### M5. Start Lead Desk
@@ -253,21 +270,21 @@ can start it in two ways, and both need the CLI installed and logged in on this 
 
 | Where you start it | What happens |
 |--------------------|--------------|
-| **In a terminal:** type `/find-leads` in Claude Code | Claude asks for the location and lead count. It asks your permission before it runs scripts or edits files, and shows each step as it works. |
-| **In Lead Desk:** Discover → **Run the full workflow** | The dashboard runs Claude Code in the background (`claude -p`) with permission to use Bash, Read, Write and Edit. Progress streams to the Activity tab. |
+| **In a terminal:** type `/find-leads` in Claude Code | Claude asks for the location, lead count and business categories. It asks your permission before it runs scripts or edits files, and shows each step as it works. |
+| **In Lead Desk:** Discover → **Run the full workflow** | The dashboard runs Claude Code in the background (`claude -p`) with permission to use Bash, Read, Write and Edit, authenticated with `ANTHROPIC_API_KEY` from `.env`. Progress streams to the Activity tab. |
 
 Claude Code finds `/find-leads` in `.claude/commands/find-leads.md`, so always start
 Claude Code **from the project folder**.
 
 ### C1. Check your Claude account
 
-You need one of these:
+For the dashboard's **Run the full workflow** button you need a **Claude Console** account
+(pay-as-you-go API billing) and its API key in `.env` as `ANTHROPIC_API_KEY`. Create one at
+console.anthropic.com → Settings → API keys. The dashboard refuses to start a run without it.
 
-- a **Claude Pro, Max, Team or Enterprise** plan (claude.ai), or
-- a **Claude Console** account (pay-as-you-go API billing).
-
-The free Claude.ai plan doesn't include Claude Code. Each `/find-leads` run uses your
-plan's usage allowance, or Console credits, and takes about 15–40 minutes.
+For typing `/find-leads` in a terminal you can use that same key, or log in with a
+**Claude Pro, Max, Team or Enterprise** plan (claude.ai). The free Claude.ai plan doesn't
+include Claude Code. Each `/find-leads` run takes about 15–40 minutes.
 
 ### C2. Windows only: install Git for Windows
 
@@ -347,9 +364,11 @@ claude
 
 To switch accounts later, type `/login`. To sign out, type `/logout`.
 
-> **Check for a stray API key.** If an `ANTHROPIC_API_KEY` environment variable is set on this
-> laptop, Claude Code uses that key instead of your subscription. Runs started from the
-> dashboard always use it. Remove the variable unless you mean to pay through it.
+> **Which account pays?** Runs started from the dashboard always use `ANTHROPIC_API_KEY`
+> from `.env`, whatever you're logged in as here. Runs you start by typing `claude` use this
+> login — unless an `ANTHROPIC_API_KEY` environment variable is set on the laptop, in which
+> case Claude Code uses that key instead. Keep the key in `.env` only, not in your shell
+> profile, unless you mean every terminal run to bill through it too.
 
 ### C6. Test the background mode the dashboard uses
 
@@ -370,7 +389,8 @@ terminal window** so it can find `claude`.
 
 1. From the project folder, run `claude`.
 2. Type `/find-leads` and press Enter.
-3. Answer the two questions: location (for example `Lagos, Nigeria`) and how many leads.
+3. Answer the three questions: location (for example `Lagos, Nigeria`), how many leads, and
+   which business categories to search (or accept the defaults from `.env`).
 4. Claude asks before running each kind of command or editing a file. Approve each one, or
    choose the option that stops it asking again for that command in this project.
 
@@ -419,8 +439,9 @@ away, run `claude update`. If you installed with WinGet, run
 
 Run these checks with Lead Desk open in your browser.
 
-1. **Keys found:** at the bottom of the sidebar, the **Apify key** and **Mailtrap key**
-   dots are both **green**. A red dot means that key is missing from `.env`.
+1. **Keys found:** at the bottom of the sidebar, the **Apify key**, **Mailtrap key** and
+   **Claude key** dots are all **green**. A red dot means that key is missing from `.env`.
+   The sidebar also shows your `COMPANY_NAME` under "Lead Desk".
 2. **Leads load:** the **Leads** tab shows your existing leads, and you can switch between
    the lead files (for example Lagos and Abuja).
 3. **Scraper works:** in a *second* terminal window, in the project folder, run:
@@ -436,7 +457,7 @@ Run these checks with Lead Desk open in your browser.
    Don't test with a real send, because these are real businesses.
 5. **Claude Code logged in:** `claude -p "Reply with the single word: ready"` prints `ready`.
 6. **Claude Code found by Lead Desk:** on the **Discover** tab, **Run the full workflow** is
-   enabled and there's no red "The claude CLI was not found on PATH" note.
+   enabled and there's no red note about the `claude` CLI or `ANTHROPIC_API_KEY`.
 
 If all six pass, the laptop is ready.
 

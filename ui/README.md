@@ -34,8 +34,10 @@ you'd get by typing it in Claude Code — search, website scrape, company-specif
 written into the CSV. It shells out to the `claude` CLI in print mode and streams the
 run into the console, a line per step, with a **Stop run** button. Expect 15–40 minutes.
 
-The location and lead count you enter are passed in, so the workflow skips its two
-opening questions rather than stalling on a prompt nobody can answer.
+The location, lead count and business categories you enter are passed in, so the
+workflow skips its opening questions rather than stalling on a prompt nobody can answer.
+Categories are comma-separated and replace `DEFAULT_CATEGORIES` from `.env` for that run;
+the field is pre-filled with the defaults so you can edit rather than retype.
 
 Two scopes:
 
@@ -44,7 +46,9 @@ Two scopes:
 - **Research, draft and send** — the full workflow including Steps 6 and 7. Emails go
   out at the end of the run without a further prompt, so the UI confirms up front.
 
-Requires the `claude` CLI on PATH; the button is disabled with a note if it's missing.
+Requires the `claude` CLI on PATH and `ANTHROPIC_API_KEY` in `.env`; the button is
+disabled with a note if either is missing. The key is passed to the CLI for that run only,
+so each install bills its own account regardless of which claude.ai login the machine has.
 The run is granted Bash, Read, Write and Edit — what the workflow needs, nothing else.
 
 ## Sending
@@ -59,8 +63,10 @@ Sends go through the same Mailtrap path as `scripts/send_leads.py` and append to
 - On success the row's Status and Date Contacted are updated; on failure the row is
   marked `Send Failed`.
 
-The two dots at the bottom of the sidebar show whether `APIFY_API_KEY` and
-`MAILTRAP_API_KEY` were found in `.env`.
+The three dots at the bottom of the sidebar show whether `APIFY_API_KEY`,
+`MAILTRAP_API_KEY` and `ANTHROPIC_API_KEY` were found in `.env`. The company name in the
+sidebar, the From: name on every send, and the pre-filled location and categories on
+Discover all come from `.env` too — see [CUSTOMIZING.md](../CUSTOMIZING.md).
 
 ## Layout
 

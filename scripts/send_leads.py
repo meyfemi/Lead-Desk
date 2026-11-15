@@ -1,37 +1,35 @@
 #!/usr/bin/env python3
 """
-Dispatcher: reads lagos_nigeria_leads.csv, sends emails for all
-'Ready to Send' rows via Mailtrap, and updates the CSV in place.
+Dispatcher: reads a leads CSV, sends emails for all 'Ready to Send' rows via
+Mailtrap, and updates the CSV in place.
+
+    python3 scripts/send_leads.py                       # leads/<DEFAULT_LOCATION>_leads.csv
+    python3 scripts/send_leads.py leads/accra_ghana_leads.csv
 """
 import csv
 import json
+import re
 import shutil
 import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
-LEADS_FILE = ROOT / "leads" / "lagos_nigeria_leads.csv"
+from config import ROOT, load_env, identity
+
 LOG_FILE = ROOT / "leads" / "send_log.txt"
-ENV_FILE = ROOT / ".env"
 
 
-def load_env():
-    env = {}
-    if ENV_FILE.exists():
-        with open(ENV_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
+def default_leads_file(env):
+    location = env.get("DEFAULT_LOCATION", "")
+    slug = re.sub(r"\s+", "_", location.lower().replace(",", "").strip())
+    slug = re.sub(r"[^a-z0-9_]", "", slug)
+    return ROOT / "leads" / f"{slug}_leads.csv" if slug else None
 
 
-def send_email(to_email, to_name, subject, body_text, from_email, api_key):
+def send_email(to_email, to_name, subject, body_text, from_email, from_name, api_key):
     payload = {
-        "from": {"email": from_email, "name": "Femi | Krediview"},
+        "from": {"email": from_email, "name": from_name},
         "to": [{"email": to_email, "name": to_name or to_email}],
         "subject": subject,
         "text": body_text,
@@ -62,13 +60,25 @@ def main():
 
     env = load_env()
     api_key = env.get("MAILTRAP_API_KEY")
-    from_email = env.get("MAIL_FROM_ADDRESS", "info@krediview.com")
+    who = identity(env)
+    from_email, from_name = who["from_email"], who["from_name"]
 
     if not api_key:
         print("ERROR: MAILTRAP_API_KEY not in .env", file=sys.stderr)
         sys.exit(1)
+    if not from_email:
+        print("ERROR: MAIL_FROM_ADDRESS not in .env", file=sys.stderr)
+        sys.exit(1)
 
-    with open(LEADS_FILE, newline="", encoding="utf-8") as f:
+    leads_file = Path(sys.argv[1]) if len(sys.argv) > 1 else default_leads_file(env)
+    if not leads_file:
+        print("ERROR: pass a leads CSV path, or set DEFAULT_LOCATION in .env", file=sys.stderr)
+        sys.exit(1)
+    if not leads_file.exists():
+        print(f"ERROR: {leads_file} does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    with open(leads_file, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     fieldnames = list(rows[0].keys()) if rows else []
@@ -76,7 +86,7 @@ def main():
 
     sent, failed, skipped = [], [], []
 
-    log_lines = [f"=== Krediview email send run — {today} ===\n"]
+    log_lines = [f"=== {who['company_name']} email send run — {today} ===\n"]
 
     for row in rows:
         name = row["Company Name"]
@@ -97,7 +107,7 @@ def main():
         ceo = row["Company CEO"]
         to_name = ceo.split()[0] if ceo and ceo != "Not identified" else name
 
-        success, detail = send_email(email, to_name, subject, body, from_email, api_key)
+        success, detail = send_email(email, to_name, subject, body, from_email, from_name, api_key)
 
         if success:
             row["Status"] = "Sent"
@@ -111,7 +121,7 @@ def main():
             log_lines.append(f"✗ FAILED   {name} <{email}> — {detail}")
             print(f"✗ Failed:  {name} ({email}) — {detail}")
 
-    with open(LEADS_FILE, "w", newline="", encoding="utf-8") as f:
+    with open(leads_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(rows)

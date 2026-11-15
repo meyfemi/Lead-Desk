@@ -9,20 +9,8 @@ import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
-
-def load_env():
-    env_path = Path(__file__).parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
+from config import load_env, identity
 
 
 def send_email(to_email, to_name, subject, body_text, from_email, from_name, api_key):
@@ -70,11 +58,15 @@ def main():
 
     env = load_env()
     api_key = env.get("MAILTRAP_API_KEY")
-    from_email = env.get("MAIL_FROM_ADDRESS", "info@krediview.com")
-    from_name = "Femi | Krediview"
+    who = identity(env)
+    from_email = who["from_email"]
+    from_name = who["from_name"]
 
     if not api_key:
         print(json.dumps({"status": "error", "message": "MAILTRAP_API_KEY not found in .env"}))
+        sys.exit(1)
+    if not from_email:
+        print(json.dumps({"status": "error", "message": "MAIL_FROM_ADDRESS not found in .env"}))
         sys.exit(1)
 
     if args.body_file:

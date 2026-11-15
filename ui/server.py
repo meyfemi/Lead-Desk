@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Lead Desk — a local dashboard for the Krediview lead pipeline.
+Lead Desk — a local dashboard for the lead pipeline. Branding, sender identity
+and default search settings come from .env (see .env.example).
 
 Stdlib only, to match the rest of the project. Serves a single-page UI plus a
 small JSON API over the lead CSVs, and shells out to the existing scripts in
@@ -11,6 +12,7 @@ scripts/ for the work they already do (Apify search, website enrichment, send).
 import argparse
 import json
 import mimetypes
+import os
 import shutil
 import signal
 import subprocess
@@ -28,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import store  # noqa: E402
+from config import identity, parse_categories  # noqa: E402
 from send_email import send_email as mailtrap_send  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
@@ -91,11 +94,13 @@ def run_in_thread(fn, *args):
 
 # ── Work performed on behalf of the UI ──────────────────────────────────────
 
-def do_apify_search(job_id, location, count):
+def do_apify_search(job_id, location, count, categories=""):
     """Run scripts/apify_search.py and hold the candidates for review."""
     out_path = ROOT / "leads" / f".apify_{job_id}.json"
     cmd = [sys.executable, str(SCRIPTS / "apify_search.py"),
            "--location", location, "--count", str(count), "--output", str(out_path)]
+    if categories:
+        cmd += ["--categories", categories]
     job_log(job_id, f"$ {' '.join(cmd[1:])}")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -173,18 +178,32 @@ def summarize_stream_event(event):
     return ""
 
 
-def do_find_leads(job_id, location, count, mode):
-    """Run the /find-leads workflow headlessly through the claude CLI."""
+def do_find_leads(job_id, location, count, mode, categories=""):
+    """Run the /find-leads workflow headlessly through the claude CLI.
+
+    Authenticates with ANTHROPIC_API_KEY from .env so each install pays through
+    its own key rather than whichever account `claude` happens to be logged in as.
+    """
     if not shutil.which("claude"):
         job_done(job_id, error="The `claude` CLI is not on PATH — install Claude Code to run this.")
         return
+    api_key = store.load_env().get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        job_done(job_id, error="ANTHROPIC_API_KEY is not set in .env — add it to run /find-leads "
+                               "from the dashboard.")
+        return
 
+    categories_line = (
+        f"Business categories: {categories}\n" if categories
+        else "Business categories: use the defaults from .env (DEFAULT_CATEGORIES)\n"
+    )
     prompt = (
         f"/find-leads\n\n"
         f"Location: {location}\n"
-        f"Lead count: {count}\n\n"
-        f"Step 1 is already answered by the two values above — use them and do not "
-        f"call AskUserQuestion.\n"
+        f"Lead count: {count}\n"
+        f"{categories_line}\n"
+        f"The Step 2 questions are already answered by the values above — use them and "
+        f"do not call AskUserQuestion.\n"
         f"{FIND_LEADS_TAIL.get(mode, FIND_LEADS_TAIL['research'])}"
     )
 
@@ -193,15 +212,17 @@ def do_find_leads(job_id, location, count, mode):
         "--output-format", "stream-json", "--verbose",
         "--allowedTools", "Bash", "Read", "Write", "Edit",
     ]
+    env = dict(os.environ, ANTHROPIC_API_KEY=api_key)
 
     job_log(job_id, f"$ claude -p /find-leads  ({location}, {count} leads, {mode})")
+    job_log(job_id, f"· categories: {categories or 'defaults from .env'}")
     if mode == "research":
         job_log(job_id, "· research only — no emails will be sent")
     else:
         job_log(job_id, "· full run — this WILL send outreach emails")
 
     try:
-        proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
         PROCS[job_id] = proc
         for line in proc.stdout:
@@ -282,7 +303,8 @@ def send_one(filename, lead_id, stage, dry_run):
     """Send a lead's first mail (stage 0) or a follow-up (stage 1/2)."""
     env = store.load_env()
     api_key = env.get("MAILTRAP_API_KEY")
-    from_email = env.get("MAIL_FROM_ADDRESS", "info@krediview.com")
+    who = identity(env)
+    from_email, from_name = who["from_email"], who["from_name"]
 
     rows = store.read(filename)
     row = rows[lead_id]
@@ -312,11 +334,13 @@ def send_one(filename, lead_id, stage, dry_run):
 
     if not api_key:
         return {"ok": False, "name": name, "detail": "MAILTRAP_API_KEY not in .env"}
+    if not from_email:
+        return {"ok": False, "name": name, "detail": "MAIL_FROM_ADDRESS not in .env"}
 
     ceo = row.get("Company CEO", "")
     to_name = ceo.split()[0] if ceo and ceo != "Not identified" else name
     ok, result = mailtrap_send(email, to_name, subject, body, from_email,
-                               "Femi | Krediview", api_key)
+                               from_name, api_key)
 
     if ok:
         store.update(filename, lead_id, {
@@ -406,6 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                 files = store.list_files()
                 current = query.get("file", [None])[0] or (files[0]["file"] if files else None)
                 rows = store.read(current) if current else []
+                env = store.load_env()
                 return self._json({
                     "files": files,
                     "file": current,
@@ -415,8 +440,10 @@ class Handler(BaseHTTPRequestHandler):
                     "timeline": store.timeline(rows),
                     "followups": store.followups_due(rows),
                     "today": date.today().isoformat(),
-                    "mail_configured": bool(store.load_env().get("MAILTRAP_API_KEY")),
-                    "apify_configured": bool(store.load_env().get("APIFY_API_KEY")),
+                    "identity": identity(env),
+                    "mail_configured": bool(env.get("MAILTRAP_API_KEY")),
+                    "apify_configured": bool(env.get("APIFY_API_KEY")),
+                    "claude_key_configured": bool(env.get("ANTHROPIC_API_KEY", "").strip()),
                     "claude_cli": bool(shutil.which("claude")),
                 })
 
@@ -466,20 +493,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/discover":
                 location = (data.get("location") or "").strip()
                 count = max(1, min(200, int(data.get("count") or 10)))
+                categories = ", ".join(parse_categories(data.get("categories") or ""))
                 if not location:
                     return self._json({"error": "location is required"}, 400)
                 job_id = new_job("discover", f"Searching Google Maps in {location}")
-                run_in_thread(do_apify_search, job_id, location, count)
+                run_in_thread(do_apify_search, job_id, location, count, categories)
                 return self._json({"job": job_id})
 
             if path == "/api/find-leads":
                 location = (data.get("location") or "").strip()
                 count = max(1, min(200, int(data.get("count") or 10)))
+                categories = ", ".join(parse_categories(data.get("categories") or ""))
                 mode = data.get("mode") if data.get("mode") in ("research", "full") else "research"
                 if not location:
                     return self._json({"error": "location is required"}, 400)
                 job_id = new_job("findleads", f"/find-leads in {location}")
-                run_in_thread(do_find_leads, job_id, location, count, mode)
+                run_in_thread(do_find_leads, job_id, location, count, mode, categories)
                 return self._json({"job": job_id})
 
             if path == "/api/jobs/stop":

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Apify Google Maps Business Scraper for Krediview lead generation.
-Searches for qualifying SMEs in a specified location across target sectors.
+Apify Google Maps business scraper for lead generation.
+Searches a location for every business category given (or the defaults from .env).
+
+    python3 scripts/apify_search.py --location "Lagos, Nigeria" --count 20
+    python3 scripts/apify_search.py --location "Accra, Ghana" --categories "dentist, gym, car wash"
 """
 import argparse
 import json
@@ -10,7 +13,8 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from pathlib import Path
+
+from config import load_env, default_categories, parse_categories
 
 _SSL_CTX = ssl.create_default_context()
 try:
@@ -19,19 +23,6 @@ try:
 except ImportError:
     _SSL_CTX.check_hostname = False
     _SSL_CTX.verify_mode = ssl.CERT_NONE
-
-
-def load_env():
-    env_path = Path(__file__).parent.parent / ".env"
-    env = {}
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
 
 
 def apify_request(url, method="GET", data=None, api_key=None):
@@ -144,27 +135,17 @@ def filter_and_normalize(items):
     return leads
 
 
-def build_search_queries(location, sectors=None):
-    if sectors is None:
-        sectors = [
-            "restaurant",
-            "hotel",
-            "clinic",
-            "pharmacy",
-            "law firm",
-            "accounting firm",
-            "consulting firm",
-            "training academy",
-            "spa",
-            "retail boutique",
-        ]
-    return [f"{sector} in {location}" for sector in sectors]
+def build_search_queries(location, categories):
+    return [f"{category} in {location}" for category in categories]
 
 
 def main():
     parser = argparse.ArgumentParser(description="Search for business leads via Apify")
     parser.add_argument("--location", required=True, help='e.g. "Lagos, Nigeria"')
     parser.add_argument("--count", type=int, default=10, help="Target number of leads")
+    parser.add_argument("--categories", default="",
+                        help='Comma-separated business types, e.g. "dentist, gym, car wash". '
+                             "Replaces DEFAULT_CATEGORIES from .env for this run.")
     parser.add_argument("--output", default="-", help="Output JSON file path (- for stdout)")
     args = parser.parse_args()
 
@@ -174,22 +155,12 @@ def main():
         print("Error: APIFY_API_KEY not found in .env", file=sys.stderr)
         sys.exit(1)
 
-    sectors = [
-        "restaurant",
-        "hotel",
-        "clinic",
-        "pharmacy",
-        "law firm",
-        "accounting firm",
-        "consulting firm",
-        "training academy",
-        "spa",
-        "retail boutique",
-    ]
+    categories = parse_categories(args.categories) or default_categories(env)
+    print(f"[Apify] Categories: {', '.join(categories)}", file=sys.stderr)
 
     # Request enough per query to exceed the target; we'll trim after filtering
-    count_per_query = max(5, (args.count // len(sectors)) + 3)
-    queries = build_search_queries(args.location, sectors)
+    count_per_query = max(5, (args.count // len(categories)) + 3)
+    queries = build_search_queries(args.location, categories)
 
     raw_items = run_actor(queries, count_per_query, api_key)
     leads = filter_and_normalize(raw_items)

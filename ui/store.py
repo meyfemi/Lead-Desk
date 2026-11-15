@@ -7,14 +7,17 @@ reads and rewrites them in place so the UI and the CLI stay in sync.
 """
 import csv
 import re
+import sys
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+from config import load_env, identity  # noqa: E402,F401 — shared .env loader, re-exported
+
 LEADS_DIR = ROOT / "leads"
 LOG_FILE = LEADS_DIR / "send_log.txt"
-ENV_FILE = ROOT / ".env"
 
 COLUMNS = [
     "Company Name", "Company URL", "Company Address", "Company Email", "Company Phone",
@@ -39,18 +42,6 @@ ALL_STATUSES = [
 ]
 
 _write_lock = threading.Lock()
-
-
-def load_env():
-    env = {}
-    if ENV_FILE.exists():
-        with open(ENV_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
 
 
 def slugify_location(location):
@@ -253,7 +244,8 @@ def timeline(rows, days=30):
 def append_log(lines):
     LEADS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    text = f"\n=== Krediview dashboard send — {stamp} ===\n" + "\n".join(lines) + "\n"
+    company = identity()["company_name"]
+    text = f"\n=== {company} dashboard send — {stamp} ===\n" + "\n".join(lines) + "\n"
     with _write_lock:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(text)
