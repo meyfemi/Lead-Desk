@@ -1,2 +1,27 @@
+# Secrets
 .env
+.env.*
+!.env.example
+
+# Generated lead data, Apify temp output, send logs
 leads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Scratch folders
+temp-location/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.log
+
+# Claude Code local settings (shared commands in .claude/commands stay tracked)
+.claude/settings.local.json

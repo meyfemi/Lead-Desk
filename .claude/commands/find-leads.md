@@ -86,6 +86,14 @@ python3 scripts/scrape_website.py "[company_website_url]"
 
 Parse the JSON output. Combine it with the Apify data to fill in the lead record.
 
+If the scraper's `emails` list comes back empty, re-run it directly against the contact page before giving up:
+
+```bash
+python3 scripts/scrape_website.py "[company_website_url]/contact"
+```
+
+(Also try `/contact-us` and `/about-us` if needed.) The contact page is where the company's general enquiry address is usually published.
+
 ### 5b. Populate the lead record
 
 | Column | Source |
@@ -93,9 +101,9 @@ Parse the JSON output. Combine it with the Apify data to fill in the lead record
 | Company Name | Apify `title` |
 | Company URL | Apify `website` |
 | Company Address | Apify `address` — format as "Nigeria; Lagos; [street]" |
-| Company Email | Prefer a CEO/personal email from scraper; fall back to company contact email; fall back to Apify email; write "Not found" if none |
+| Company Email | Use the company's general contact email — the one published on their website's contact/about page (e.g. `info@`, `contact@`, `hello@`, `enquiries@`, `sales@`, `admin@`). Take it from the scraper's `emails` list, preferring a mailbox on the company's own domain. Fall back to Apify `email`. Do NOT use a CEO/personal email even if you find one. Write "Not found" if none |
 | Company Phone | Prefer a direct number from scraper; fall back to Apify `phone`; write "Not found" if none |
-| Company CEO | From scraper `ceo_names[0]` if found; otherwise "Not identified" |
+| Company CEO | From scraper `ceo_names[0]` if found; otherwise "Not identified". This is context only — it is never used as the send address |
 | Company Summary | Write 2–3 sentences: what they do, who their customers are, and their approximate size/reach. Base this on their website text and Apify data. |
 | Specific Sales Edges | See Step 5c |
 | Email Subject | See Step 5d |
@@ -125,10 +133,10 @@ Bad examples (do NOT write these):
 - 5–8 words maximum
 - Reference their business name or a specific detail you found
 - No clickbait, no ALL CAPS, no question marks as a hook
-- Examples: "Your reviews don't match your reputation, [Name]" / "[Business Name] — one thing worth 5 minutes"
+- Examples: "Your reviews don't match your reputation" / "[Business Name] — one thing worth 5 minutes"
 
 **Email body rules:**
-- Address the CEO by first name if known; use "Hi" without a name if not (NEVER "Dear Sir/Ma", "Dear Business Owner", "To Whom It May Concern")
+- These emails land in a shared company inbox, so write to the team, not to an individual: open with "Hi [Company Name] team" or just "Hi" (NEVER "Dear Sir/Ma", "Dear Business Owner", "To Whom It May Concern"). If a CEO name is known you may mention them in the body ("...worth passing to [First name]"), but do not use their name as the greeting.
 - Total length: 100–150 words, no more
 - **Paragraph 1 (1–2 sentences):** Prove you looked at their business. Reference one specific thing you found on their website or Google listing.
 - **Paragraph 2 (1–2 sentences):** Name the exact problem clearly. No hedging.
@@ -147,7 +155,7 @@ Bad examples (do NOT write these):
 
 Before this lead is marked "Ready to Send", verify every item on this checklist. If any item fails, rewrite the relevant part and recheck.
 
-- [ ] The recipient's name (if used) is spelled correctly and matches what you found
+- [ ] The greeting is addressed to the company/team, not to an individual, and the recipient email is a company contact address (not a personal/CEO mailbox)
 - [ ] Paragraph 1 contains a specific, verifiable detail from THIS company's website/data (not a generic statement)
 - [ ] The problem statement is true for this specific company (not assumed)
 - [ ] The Krediview benefit mentioned is the most relevant one for this company's situation
@@ -171,7 +179,7 @@ Announce progress: "✓ Lead [N/LEAD_COUNT]: [Company Name] — processed and qu
 After all LEAD_COUNT leads are processed, send the emails in this priority order:
 
 1. Leads with the most company-specific Sales Edges (ranked by specificity)
-2. Leads where you found a direct CEO email (higher open rate)
+2. Leads whose contact email is on the company's own domain (rather than a free/generic provider)
 3. Remaining leads alphabetically
 
 For each lead with Status = "Ready to Send":
@@ -179,7 +187,7 @@ For each lead with Status = "Ready to Send":
 ```bash
 python3 scripts/send_email.py \
   --to-email "[Company Email]" \
-  --to-name "[Company CEO first name, or Company Name if CEO unknown]" \
+  --to-name "[Company Name]" \
   --subject "[Email Subject]" \
   --body "[First Mail Body]"
 ```
