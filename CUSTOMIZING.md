@@ -15,7 +15,7 @@ edit three files, all at the project root. No code changes.
 cp .env.example .env
 ```
 
-Fill in the identity block — this is what appears on every email:
+Fill in the identity block - this is what appears on every email:
 
 ```
 COMPANY_NAME=Acme Web Studio
@@ -28,7 +28,7 @@ The From: name becomes `Ada | Acme Web Studio` and the sign-off becomes:
 
 ```
 Ada
-Acme Web Studio — Websites that bring in customers
+Acme Web Studio - Websites that bring in customers
 hello@acmeweb.example
 ```
 
@@ -49,7 +49,7 @@ And the three keys:
 
 ## 2. `our_offer.md`
 
-Rewrite it for the company. Keep it factual — the workflow is told never to promise anything
+Rewrite it for the company. Keep it factual - the workflow is told never to promise anything
 this file does not say you provide. Useful sections: what you do, who it's for, 3–5 value
 propositions (each one a reason a customer picks you), the tone you write in, and any real
 proof points.
@@ -68,7 +68,7 @@ pricing or services page", "a 'we're hiring' notice but no company registration 
 - Start the dashboard: `./start-ui.sh` (or `python ui\server.py` on Windows). The sidebar
   shows the company name, and all three key dots are green.
 - The Discover tab pre-fills your default location and categories.
-- Open any lead and click **Dry run** — the output shows the new From: name.
+- Open any lead and click **Dry run** - the output shows the new From: name.
 - Run `/find-leads` for a small count (2–3) in research mode and read the drafts before
   sending anything.
 

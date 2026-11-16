@@ -71,7 +71,7 @@ def run_actor(search_queries, count_per_query, api_key):
         status_data = apify_request(status_url, api_key=api_key)
         status = status_data["data"]["status"]
         item_count = status_data["data"].get("stats", {}).get("itemsWrittenCount", "?")
-        print(f"[Apify] {elapsed}s — status: {status}, items: {item_count}", file=sys.stderr)
+        print(f"[Apify] {elapsed}s - status: {status}, items: {item_count}", file=sys.stderr)
         if status in terminal_statuses:
             break
 

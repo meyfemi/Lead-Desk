@@ -15,7 +15,7 @@ from config import load_env, identity
 
 def send_email(to_email, to_name, subject, body_text, from_email, from_name, api_key):
     if not shutil.which("curl"):
-        return False, {"error": "curl not found — install curl to send emails"}
+        return False, {"error": "curl not found - install curl to send emails"}
 
     payload = {
         "from": {"email": from_email, "name": from_name},

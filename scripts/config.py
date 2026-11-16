@@ -3,11 +3,11 @@ Shared configuration for the lead pipeline.
 
 Everything business-specific lives in .env at the project root, so one install
 can be customised for any company without touching code. Secrets and identity
-share that file — see .env.example for every key.
+share that file - see .env.example for every key.
 
 Identity keys:   COMPANY_NAME, COMPANY_TAGLINE, SENDER_NAME, MAIL_FROM_ADDRESS
 Sourcing keys:   DEFAULT_LOCATION, DEFAULT_CATEGORIES
-Service keys:    APIFY_API_KEY, MAILTRAP_API_KEY, ANTHROPIC_API_KEY
+Service keys:    APIFY_API_KEY, MAILTRAP_API_KEY, ANTHROPIC_API_KEY, CLAUDE_MODEL
 """
 import re
 from pathlib import Path
@@ -62,7 +62,7 @@ def identity(env=None):
     from_email = env.get("MAIL_FROM_ADDRESS", "").strip()
 
     from_name = company if sender == company else f"{sender} | {company}"
-    signature = [sender, f"{company} — {tagline}" if tagline else company]
+    signature = [sender, f"{company} - {tagline}" if tagline else company]
     if from_email:
         signature.append(from_email)
 

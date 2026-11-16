@@ -1,7 +1,7 @@
 """
 CSV-backed data layer for the lead dashboard.
 
-The lead CSVs in leads/ are the single source of truth — the same files the
+The lead CSVs in leads/ are the single source of truth - the same files the
 /find-leads workflow and scripts/send_leads.py read and write. Everything here
 reads and rewrites them in place so the UI and the CLI stay in sync.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from config import load_env, identity  # noqa: E402,F401 — shared .env loader, re-exported
+from config import load_env, identity  # noqa: E402,F401 - shared .env loader, re-exported
 
 LEADS_DIR = ROOT / "leads"
 LOG_FILE = LEADS_DIR / "send_log.txt"
@@ -27,12 +27,12 @@ COLUMNS = [
 ]
 
 # Status vocabulary shared with the /find-leads workflow, plus "Draft" for rows
-# imported from Apify that have no outreach copy written yet.
-STATUS_DRAFT = "Draft — Needs Copy"
+# that have no outreach copy written yet.
+STATUS_DRAFT = "Draft - Needs Copy"
 STATUS_READY = "Ready to Send"
 STATUS_SENT = "Sent"
 STATUS_FAILED = "Send Failed"
-STATUS_NO_EMAIL = "No Email — Skip Send"
+STATUS_NO_EMAIL = "No Email - Skip Send"
 STATUS_FU1 = "Followed Up 1"
 STATUS_FU2 = "Followed Up 2 (Final)"
 
@@ -48,6 +48,11 @@ def slugify_location(location):
     slug = location.lower().replace(",", "").strip()
     slug = re.sub(r"\s+", "_", slug)
     return re.sub(r"[^a-z0-9_]", "", slug)
+
+
+def lead_file_for(location):
+    """The CSV /find-leads uses for a location: 'Accra, Ghana' -> accra_ghana_leads.csv."""
+    return f"{slugify_location(location)}_leads.csv"
 
 
 def list_files():
@@ -93,6 +98,7 @@ def read(filename):
 def write(filename, rows):
     path = resolve(filename)
     with _write_lock:
+        LEADS_DIR.mkdir(exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=COLUMNS, quoting=csv.QUOTE_ALL,
                                     extrasaction="ignore")
@@ -112,6 +118,9 @@ def update(filename, lead_id, patch):
 
 
 def append(filename, new_rows):
+    """Append rows to a lead CSV, creating it if needed. Names already in the file are
+    skipped (case-insensitive), the same duplicate rule /find-leads applies. Missing
+    columns are written blank. Returns the rows actually added."""
     path = resolve(filename)
     existing = read(filename) if path.exists() else []
     known = {r["Company Name"].strip().lower() for r in existing}
@@ -124,56 +133,14 @@ def append(filename, new_rows):
         full = {col: row.get(col, "") for col in COLUMNS}
         existing.append(full)
         added.append(full)
-    write(filename, existing)
+    if added:
+        write(filename, existing)
     return added
 
 
 def has_email(row):
     email = (row.get("Company Email") or "").strip()
     return bool(email) and email.lower() != "not found"
-
-
-def business_days_from(days, start=None):
-    day = start or date.today()
-    added = 0
-    while added < days:
-        day += timedelta(days=1)
-        if day.weekday() < 5:
-            added += 1
-    return day.isoformat()
-
-
-def from_apify(item, location=""):
-    """Map one normalized apify_search.py record onto a CSV lead row."""
-    address = (item.get("address") or "").strip()
-    parts = [p.strip() for p in location.split(",")][::-1]
-    if parts and address:
-        address = "; ".join([p for p in parts if p] + [address])
-    email = (item.get("email") or "").strip() or "Not found"
-    phone = (item.get("phone") or "").strip() or "Not found"
-    rating = item.get("google_rating")
-    reviews = item.get("google_review_count")
-    signal = ""
-    if rating or reviews:
-        signal = f" Google listing: {rating or 'no'} rating from {reviews or 0} reviews."
-    return {
-        "Company Name": (item.get("name") or "").strip(),
-        "Company URL": (item.get("website") or "").strip(),
-        "Company Address": address,
-        "Company Email": email,
-        "Company Phone": phone,
-        "Company CEO": "Not identified",
-        "Company Summary": f"{item.get('category', '')}.{signal}".strip(". ").strip(),
-        "Specific Sales Edges": "",
-        "Email Subject": "",
-        "First Mail Body": "",
-        "Followup 1 Date": business_days_from(5),
-        "Followup 1 Body": "",
-        "Followup 2 Date": business_days_from(10),
-        "Followup 2 Body": "",
-        "Status": STATUS_DRAFT if has_email({"Company Email": email}) else STATUS_NO_EMAIL,
-        "Date Contacted": "",
-    }
 
 
 def followups_due(rows, today=None):
@@ -214,7 +181,7 @@ def timeline(rows, days=30):
     """Contacted-per-day series for the activity chart.
 
     Anchored on today, but if the last send predates that window the series
-    slides back to end on the most recent send — an outreach run from two
+    slides back to end on the most recent send - an outreach run from two
     months ago should still be visible rather than showing an empty chart.
     """
     counts = {}
@@ -245,7 +212,7 @@ def append_log(lines):
     LEADS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     company = identity()["company_name"]
-    text = f"\n=== {company} dashboard send — {stamp} ===\n" + "\n".join(lines) + "\n"
+    text = f"\n=== {company} dashboard send - {stamp} ===\n" + "\n".join(lines) + "\n"
     with _write_lock:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(text)

@@ -86,7 +86,7 @@ def main():
 
     sent, failed, skipped = [], [], []
 
-    log_lines = [f"=== {who['company_name']} email send run — {today} ===\n"]
+    log_lines = [f"=== {who['company_name']} email send run - {today} ===\n"]
 
     for row in rows:
         name = row["Company Name"]
@@ -98,7 +98,7 @@ def main():
 
         email = row["Company Email"]
         if not email or email == "Not found":
-            row["Status"] = "No Email — Skip Send"
+            row["Status"] = "No Email - Skip Send"
             skipped.append(name)
             continue
 
@@ -118,8 +118,8 @@ def main():
         else:
             row["Status"] = "Send Failed"
             failed.append(name)
-            log_lines.append(f"✗ FAILED   {name} <{email}> — {detail}")
-            print(f"✗ Failed:  {name} ({email}) — {detail}")
+            log_lines.append(f"✗ FAILED   {name} <{email}> - {detail}")
+            print(f"✗ Failed:  {name} ({email}) - {detail}")
 
     with open(leads_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
@@ -134,7 +134,7 @@ def main():
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_text)
 
-    print(f"\nDone — {len(sent)} sent, {len(failed)} failed, {len(skipped)} skipped")
+    print(f"\nDone - {len(sent)} sent, {len(failed)} failed, {len(skipped)} skipped")
     print(f"Log: {LOG_FILE}")
 
 

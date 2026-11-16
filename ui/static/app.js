@@ -1,11 +1,13 @@
-/* Lead Desk — vanilla SPA over the /api endpoints in ui/server.py */
+/* Lead Desk - vanilla SPA over the /api endpoints in ui/server.py */
 
 const S = {
   files: [], file: null, leads: [], stats: null, timeline: [], followups: [],
   statuses: [], today: '', mail: false, apify: false, claudeCli: false, claudeKey: false,
   identity: { company_name: '', default_location: '', default_categories: [] },
   view: 'overview', query: '', filter: 'all', selection: new Set(),
-  openLead: null, job: null, jobPoll: null, candidates: null,
+  openLead: null, job: null, jobPoll: null,
+  // Discover form. null = "use the default from .env" until the user edits the field.
+  fl: { loc: null, cnt: 10, cats: null, mode: 'research' },
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -13,15 +15,15 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const STATUS_META = {
-  'Draft — Needs Copy': { cls: 'draft', color: '#9a6100', short: 'Draft' },
-  'Ready to Send':      { cls: 'ready', color: '#3b53d4', short: 'Ready' },
-  'Sent':               { cls: 'sent',  color: '#12805c', short: 'Sent' },
-  'Followed Up 1':      { cls: 'fu',    color: '#6836c4', short: 'Follow-up 1' },
+  'Draft - Needs Copy': { cls: 'draft', color: '#9a6100', short: 'Draft' },
+  'Ready to Send': { cls: 'ready', color: '#3b53d4', short: 'Ready' },
+  'Sent': { cls: 'sent', color: '#12805c', short: 'Sent' },
+  'Followed Up 1': { cls: 'fu', color: '#6836c4', short: 'Follow-up 1' },
   'Followed Up 2 (Final)': { cls: 'fu', color: '#9a6cf0', short: 'Follow-up 2' },
-  'Send Failed':        { cls: 'failed', color: '#b42318', short: 'Failed' },
-  'No Email — Skip Send': { cls: 'skip', color: '#9aa1ab', short: 'No email' },
+  'Send Failed': { cls: 'failed', color: '#b42318', short: 'Failed' },
+  'No Email - Skip Send': { cls: 'skip', color: '#9aa1ab', short: 'No email' },
 };
-const meta = (s) => STATUS_META[s] || { cls: 'skip', color: '#9aa1ab', short: s || '—' };
+const meta = (s) => STATUS_META[s] || { cls: 'skip', color: '#9aa1ab', short: s || '-' };
 const badge = (s) => `<span class="badge ${meta(s).cls}">${esc(meta(s).short)}</span>`;
 const hasEmail = (l) => { const e = (l['Company Email'] || '').trim(); return e && e.toLowerCase() !== 'not found'; };
 
@@ -71,7 +73,7 @@ const TITLES = {
 function renderBrand() {
   const name = (S.identity.company_name || '').trim();
   const initial = (name || 'L').charAt(0).toUpperCase();
-  document.title = name ? `Lead Desk — ${name}` : 'Lead Desk';
+  document.title = name ? `Lead Desk - ${name}` : 'Lead Desk';
   $('#brand-mark').textContent = initial;
   $('#brand-sub').textContent = name ? `${name} outreach` : 'Outreach';
   $('#favicon').href = 'data:image/svg+xml,' + encodeURIComponent(
@@ -117,7 +119,7 @@ function render() {
 /* ── Overview ────────────────────────────────────────────── */
 function viewOverview() {
   const st = S.stats || { total: 0, by_status: {}, contacted: 0, reachable: 0, coverage: 0, followups_due: 0 };
-  const drafts = (st.by_status['Draft — Needs Copy'] || 0);
+  const drafts = (st.by_status['Draft - Needs Copy'] || 0);
   const ready = (st.by_status['Ready to Send'] || 0);
 
   const segments = Object.entries(st.by_status)
@@ -160,8 +162,9 @@ function viewOverview() {
           <div class="legend">${legend}</div>
           ${drafts ? `<p class="hint" style="margin:18px 0 0">
             <b>${drafts}</b> lead${drafts > 1 ? 's have' : ' has'} no outreach copy yet.
-            Run <span class="kbd">/find-leads</span> in Claude Code to write it, or draft it by hand
-            from the Leads tab.</p>` : ''}
+            Open each one from the Leads tab to write it, or ask Claude Code to draft copy for the
+            “Draft - Needs Copy” rows in this file. (A new <span class="kbd">/find-leads</span> run
+            skips companies already in the file.)</p>` : ''}
         </div>
       </div>
 
@@ -178,7 +181,7 @@ function viewOverview() {
       ${due ? `<div class="table-wrap"><table><thead><tr>
           <th>Company</th><th>Stage</th><th>Due</th></tr></thead>
           <tbody>${due}</tbody></table></div>`
-        : `<div class="empty"><div class="big">✓</div>Nothing due — the pipeline is caught up.</div>`}
+      : `<div class="empty"><div class="big">✓</div>Nothing due - the pipeline is caught up.</div>`}
     </div>`;
 }
 
@@ -229,14 +232,14 @@ function viewLeads() {
       <td class="tight"><input type="checkbox" data-check="${l.id}" ${S.selection.has(l.id) ? 'checked' : ''}></td>
       <td>
         <div class="cell-name">${esc(l['Company Name'])}</div>
-        <div class="cell-sub truncate">${esc(l['Company Address'] || '—')}</div>
+        <div class="cell-sub truncate">${esc(l['Company Address'] || '-')}</div>
       </td>
       <td>${hasEmail(l)
-        ? `<span class="truncate" style="display:block">${esc(l['Company Email'])}</span>`
-        : '<span style="color:var(--faint)">no email</span>'}</td>
+      ? `<span class="truncate" style="display:block">${esc(l['Company Email'])}</span>`
+      : '<span style="color:var(--faint)">no email</span>'}</td>
       <td>${badge(l['Status'])}</td>
-      <td style="color:var(--muted);white-space:nowrap">${esc(l['Date Contacted'] || '—')}</td>
-      <td style="color:var(--muted)">${l['First Mail Body'] ? '✎ written' : '<span style="color:var(--faint)">—</span>'}</td>
+      <td style="color:var(--muted);white-space:nowrap">${esc(l['Date Contacted'] || '-')}</td>
+      <td style="color:var(--muted)">${l['First Mail Body'] ? '✎ written' : '<span style="color:var(--faint)">-</span>'}</td>
     </tr>`).join('');
 
   const n = S.selection.size;
@@ -288,7 +291,7 @@ function viewFollowups() {
       <td style="white-space:nowrap">${esc(f.due_date)}
         ${f.due_date < S.today ? '<span class="badge failed">overdue</span>' : ''}</td>
       <td>${written ? '<span class="badge ready">drafted</span>'
-                    : '<span class="badge draft">needs copy</span>'}</td>
+        : '<span class="badge draft">needs copy</span>'}</td>
       <td style="text-align:right">
         <button class="btn sm ${written ? 'primary' : ''}" data-fu-send="${f.id}"
           data-stage="${f.followup_stage}" ${written ? '' : 'disabled'}>Send</button>
@@ -307,99 +310,81 @@ function viewFollowups() {
 }
 
 /* ── Discover ────────────────────────────────────────────── */
+/* "details" runs Apify + the scraper straight from the server; the other two run
+   /find-leads through the claude CLI. */
+const SCOPES = {
+  details: { label: 'Find details only', button: 'Find details', running: 'Finding…', engine: 'Apify + website scrape' },
+  research: { label: 'Research & draft only', button: 'Run /find-leads', running: 'Running…', engine: '/find-leads via Claude Code' },
+  full: { label: 'Research, draft and send', button: 'Run /find-leads', running: 'Running…', engine: '/find-leads via Claude Code' },
+};
+const DISCOVER_JOBS = ['findleads', 'finddetails', 'pending'];
+
+/* Form values come from state so the periodic re-render during a job keeps what was typed. */
+function flForm() {
+  const f = S.fl;
+  return {
+    loc: f.loc ?? (S.identity.default_location || ''),
+    cats: f.cats ?? (S.identity.default_categories || []).join(', '),
+    cnt: f.cnt,
+    mode: SCOPES[f.mode] ? f.mode : 'research',
+  };
+}
+
 function viewDiscover() {
-  const c = S.candidates;
-  const running = S.job && S.job.kind === 'discover' && S.job.state === 'running';
+  const f = flForm();
+  const scope = SCOPES[f.mode];
+  const isDetails = f.mode === 'details';
+  const running = S.job && S.job.state === 'running' && DISCOVER_JOBS.includes(S.job.kind);
+  const ready = isDetails ? S.apify : (S.claudeCli && S.claudeKey);
 
-  const results = c ? `
-    <div class="card" style="margin-top:14px">
-      <div class="card-head">
-        <h2>${c.candidates.length} new candidates</h2>
-        <span class="hint">${c.duplicates} already in ${esc(c.file)}</span>
-        <div class="spacer"></div>
-        <button class="btn primary" id="import-btn">Import selected →</button>
-      </div>
-      <div class="table-wrap"><table><thead><tr>
-        <th class="tight"><input type="checkbox" id="cand-all" checked></th>
-        <th>Company</th><th>Category & signal</th><th>Email</th>
-      </tr></thead><tbody>
-        ${c.candidates.map((r, i) => `
-          <tr>
-            <td class="tight"><input type="checkbox" data-cand="${i}" checked></td>
-            <td><div class="cell-name">${esc(r['Company Name'])}</div>
-                <div class="cell-sub truncate">${esc(r['Company URL'] || 'no website')}</div></td>
-            <td class="truncate" style="color:var(--muted)">${esc(r['Company Summary'])}</td>
-            <td>${esc(r['Company Email'])}</td>
-          </tr>`).join('')}
-      </tbody></table></div>
-    </div>` : '';
+  const red = (msg) => `<br><span style="color:var(--red)">${msg}</span>`;
+  const missing = isDetails
+    ? (S.apify ? '' : red('APIFY_API_KEY is missing from .env - required to find details.'))
+    : (S.claudeCli ? '' : red('The <b>claude</b> CLI was not found on PATH.'))
+      + (S.claudeKey ? '' : red('ANTHROPIC_API_KEY is missing from .env - required to run /find-leads from here.'));
 
-  const fl = S.job && S.job.kind === 'findleads' && S.job.state === 'running';
-  const defLoc = S.identity.default_location || '';
-  const defCats = (S.identity.default_categories || []).join(', ');
-  const canFindLeads = S.claudeCli && S.claudeKey;
+  const explain = isDetails
+    ? `<b>Find details only</b> searches Google Maps through Apify, then scrapes each website
+       for the contact email, phone, a named contact and a short factual summary. It writes no
+       outreach copy and sends nothing: leads are filed as “Draft - Needs Copy”, and businesses
+       with no email address are skipped entirely. Claude is not involved, so it costs only Apify
+       credits and usually finishes in 5–15 minutes.`
+    : `The run searches, scrapes each website, writes company-specific outreach copy and files
+       every lead into the CSV - the same workflow as typing <span class="kbd">/find-leads</span>
+       in Claude Code. Expect 15–40 minutes. <b>Research &amp; draft</b> stops before sending and
+       leaves the leads at “Ready to Send” for you to review here.`;
 
   return `
     <div class="card" style="margin-bottom:14px">
-      <div class="card-head"><h2>Run the full workflow</h2><div class="spacer"></div>
-        <span class="hint">/find-leads via Claude Code</span></div>
+      <div class="card-head"><h2>Find leads</h2><div class="spacer"></div>
+        <span class="hint">${esc(scope.engine)}</span></div>
       <div class="card-body">
         <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
           <label class="field" style="margin:0;flex:1;min-width:180px"><span>Location</span>
-            <input type="text" id="fl-loc" placeholder="City, Country" value="${esc(defLoc)}"></label>
+            <input type="text" id="fl-loc" placeholder="City, Country" value="${esc(f.loc)}"></label>
           <label class="field" style="margin:0;width:110px"><span>Leads</span>
-            <input type="number" id="fl-cnt" value="10" min="1" max="200"></label>
+            <input type="number" id="fl-cnt" value="${esc(f.cnt)}" min="1" max="200"></label>
           <label class="field" style="margin:0;width:230px"><span>Scope</span>
-            <select id="fl-mode">
-              <option value="research">Research &amp; draft only</option>
-              <option value="full">Research, draft and send</option>
-            </select></label>
-          <button class="btn primary" id="run-findleads" ${fl || !canFindLeads ? 'disabled' : ''}
-            style="margin-bottom:0">${fl ? '<span class="spinner"></span> Running…' : 'Run /find-leads'}</button>
+            <select id="fl-mode">${Object.entries(SCOPES).map(([k, s]) =>
+              `<option value="${k}" ${k === f.mode ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
+          <button class="btn primary" id="run-findleads" ${running || !ready ? 'disabled' : ''}
+            style="margin-bottom:0">${running ? `<span class="spinner"></span> ${scope.running}` : scope.button}</button>
         </div>
         <label class="field" style="margin:12px 0 0"><span>Business categories to search</span>
-          <input type="text" id="fl-cats" placeholder="e.g. dentist, gym, car wash" value="${esc(defCats)}"></label>
+          <input type="text" id="fl-cats" placeholder="e.g. dentist, gym, car wash" value="${esc(f.cats)}"></label>
         <p class="hint" style="margin:14px 0 0">
           Comma-separated. Each category becomes a Google Maps search in the location; blank
-          uses <span class="kbd">DEFAULT_CATEGORIES</span> from .env. The run searches, scrapes
-          each website, writes company-specific outreach copy and files every lead into the
-          CSV — the same workflow as typing <span class="kbd">/find-leads</span> in Claude Code.
-          Expect 15–40 minutes. <b>Research &amp; draft</b> stops before sending and leaves the
-          leads at “Ready to Send” for you to review here.
-          ${S.claudeCli ? '' : '<br><span style="color:var(--red)">The <b>claude</b> CLI was not found on PATH.</span>'}
-          ${S.claudeKey ? '' : '<br><span style="color:var(--red)">ANTHROPIC_API_KEY is missing from .env — required to run /find-leads from here.</span>'}
+          uses <span class="kbd">DEFAULT_CATEGORIES</span> from .env. ${explain}${missing}
         </p>
       </div>
     </div>
 
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-head"><h2>Search only</h2></div>
-        <div class="card-body">
-          <label class="field"><span>Location</span>
-            <input type="text" id="loc" placeholder="City, Country" value="${esc(defLoc)}"></label>
-          <label class="field"><span>Business categories</span>
-            <input type="text" id="cats" placeholder="e.g. dentist, gym, car wash" value="${esc(defCats)}"></label>
-          <label class="field"><span>Target lead count</span>
-            <input type="number" id="cnt" value="20" min="1" max="200"></label>
-          <button class="btn primary" id="run-search" ${running || !S.apify ? 'disabled' : ''}>
-            ${running ? '<span class="spinner"></span> Searching…' : 'Run Apify search'}</button>
-          ${S.apify ? '' : '<p class="hint" style="margin-top:12px;color:var(--red)">APIFY_API_KEY is missing from .env</p>'}
-          <p class="hint" style="margin-top:14px">
-            Runs one Google Maps search per category in the location. A run usually takes
-            5–15 minutes. Results land here for review before anything is written to the CSV.</p>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>Run output</h2></div>
-        <div class="card-body">${consoleBlock(
-          S.job && (S.job.kind === 'discover' || S.job.kind === 'findleads' || S.job.kind === 'pending')
-            ? S.job : null,
-          'Start a run and its progress appears here.')}</div>
-      </div>
-    </div>
-    ${results}`;
+    <div class="card">
+      <div class="card-head"><h2>Run output</h2></div>
+      <div class="card-body">${consoleBlock(
+    S.job && DISCOVER_JOBS.includes(S.job.kind) ? S.job : null,
+    'Start a run and its progress appears here.')}</div>
+    </div>`;
 }
 
 /* ── Activity ────────────────────────────────────────────── */
@@ -407,7 +392,7 @@ function viewActivity() {
   return `
     <div class="card">
       <div class="card-head"><h2>Current job</h2>${S.job && S.job.state === 'running'
-        ? '<span class="spinner" style="margin-left:6px"></span>' : ''}</div>
+      ? '<span class="spinner" style="margin-left:6px"></span>' : ''}</div>
       <div class="card-body">${consoleBlock(S.job, 'No job has run in this session yet.')}</div>
     </div>
     <div class="card" style="margin-top:14px">
@@ -426,8 +411,8 @@ function consoleBlock(job, placeholder) {
   }).join('\n');
   const tail = job.state === 'error' ? `\n<span class="err">✗ ${esc(job.error)}</span>`
     : job.stopped ? ''
-    : job.state === 'done' ? '\n<span class="dim">— finished —</span>' : '';
-  const stop = job.state === 'running' && job.kind === 'findleads'
+      : job.state === 'done' ? '\n<span class="dim">- finished -</span>' : '';
+  const stop = job.state === 'running' && (job.kind === 'findleads' || job.kind === 'finddetails')
     ? `<div style="margin-top:10px"><button class="btn sm danger" id="stop-job">Stop run</button></div>` : '';
   return `<div class="console" data-autoscroll>${lines || '<span class="dim">starting…</span>'}${tail}</div>${stop}`;
 }
@@ -464,12 +449,12 @@ function renderDrawer() {
 
     <div class="drawer-body">
       <div class="meta-grid">
-        <div class="meta"><div class="k">Email</div><div class="v">${esc(l['Company Email'] || '—')}</div></div>
-        <div class="meta"><div class="k">Phone</div><div class="v">${esc(l['Company Phone'] || '—')}</div></div>
-        <div class="meta"><div class="k">Contact</div><div class="v">${esc(l['Company CEO'] || '—')}</div></div>
+        <div class="meta"><div class="k">Email</div><div class="v">${esc(l['Company Email'] || '-')}</div></div>
+        <div class="meta"><div class="k">Phone</div><div class="v">${esc(l['Company Phone'] || '-')}</div></div>
+        <div class="meta"><div class="k">Contact</div><div class="v">${esc(l['Company CEO'] || '-')}</div></div>
         <div class="meta"><div class="k">Contacted</div><div class="v">${esc(l['Date Contacted'] || 'never')}</div></div>
         <div class="meta" style="grid-column:1/-1"><div class="k">Address</div>
-          <div class="v">${esc(l['Company Address'] || '—')}</div></div>
+          <div class="v">${esc(l['Company Address'] || '-')}</div></div>
       </div>
 
       ${l['Company Summary'] ? `<div class="section-title">Summary</div>
@@ -483,15 +468,15 @@ function renderDrawer() {
           placeholder="5–8 words, referencing something specific"></label>
       <label class="field"><span>${stage ? `Follow-up ${stage} body` : 'Body'}</span>
         <textarea id="f-body" rows="12" placeholder="${stage
-          ? '2–3 sentences, a fresh angle, same sign-off.'
-          : 'Four short paragraphs, 100–150 words.'}">${esc(l[bodyField])}</textarea></label>
+      ? '2–3 sentences, a fresh angle, same sign-off.'
+      : 'Four short paragraphs, 100–150 words.'}">${esc(l[bodyField])}</textarea></label>
 
       <div class="meta-grid">
         <label class="field" style="margin:0"><span>Contact email</span>
           <input type="text" id="f-email" value="${esc(l['Company Email'])}"></label>
         <label class="field" style="margin:0"><span>Status</span>
           <select id="f-status">${S.statuses.map((s) =>
-            `<option ${s === l['Status'] ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></label>
+        `<option ${s === l['Status'] ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></label>
       </div>
 
       <div class="section-title">Schedule</div>
@@ -562,22 +547,25 @@ async function pollJob(id) {
     S.job = job;
     if (job.state !== 'running') {
       clearInterval(S.jobPoll);
-      if (job.kind === 'discover' && job.result) {
-        S.candidates = job.result;
-        S.view = 'discover';
-        location.hash = 'discover';
-        toast(`Found ${job.result.candidates.length} new candidates`, 'ok');
-      } else if (job.kind === 'send' && job.result) {
+      let file = S.file;
+      if (job.kind === 'send' && job.result) {
         const { sent, failed, dry_run } = job.result;
         toast(`${sent.length} ${dry_run ? 'would send' : 'sent'}, ${failed.length} failed`,
           failed.length ? 'err' : 'ok');
       } else if (job.kind === 'findleads' && job.result) {
         toast(job.result.stopped ? '/find-leads run stopped' : '/find-leads run finished',
           job.result.stopped ? '' : 'ok');
+      } else if (job.kind === 'finddetails' && job.result) {
+        const r = job.result;
+        const n = `${r.added} lead${r.added === 1 ? '' : 's'}`;
+        toast(r.stopped ? `Stopped - ${n} saved to ${r.file}`
+          : `${n} saved to ${r.file}${r.skipped_no_email ? ` (${r.skipped_no_email} skipped - no email)` : ''}`,
+          r.stopped ? '' : 'ok');
+        if (r.added) file = r.file;  // show the file the new rows went into
       } else if (job.state === 'error') {
         toast(job.error, 'err');
       }
-      await load(S.file);
+      await load(file);
       return;
     }
     if (S.view === 'activity' || S.view === 'discover') render();
@@ -652,14 +640,14 @@ function wire() {
     };
   });
 
-  bind('#run-search', async () => {
-    const location = $('#loc', v).value.trim();
-    const categories = $('#cats', v).value.trim();
-    const count = Number($('#cnt', v).value);
-    if (!location) return toast('Enter a location', 'err');
-    S.candidates = null;
-    startJob('/api/discover', { location, count, categories });
-  });
+  // Discover form: mirror every field into state so a re-render keeps it. A scope change
+  // re-renders because the button, hint and enable rule depend on it.
+  const flField = (sel, key) => { const el = $(sel, v); if (el) el.oninput = () => { S.fl[key] = el.value; }; };
+  flField('#fl-loc', 'loc');
+  flField('#fl-cats', 'cats');
+  flField('#fl-cnt', 'cnt');
+  const flMode = $('#fl-mode', v);
+  if (flMode) flMode.onchange = () => { S.fl.mode = flMode.value; render(); };
 
   bind('#run-findleads', () => {
     const location = $('#fl-loc', v).value.trim();
@@ -682,25 +670,6 @@ function wire() {
     el.scrollTop = el.scrollHeight;
   });
 
-  const candAll = $('#cand-all', v);
-  if (candAll) candAll.onclick = () =>
-    v.querySelectorAll('[data-cand]').forEach((cb) => { cb.checked = candAll.checked; });
-
-  bind('#import-btn', async () => {
-    const picked = [...v.querySelectorAll('[data-cand]')]
-      .filter((cb) => cb.checked)
-      .map((cb) => S.candidates.candidates[Number(cb.dataset.cand)]);
-    if (!picked.length) return toast('Select at least one candidate', 'err');
-    try {
-      const r = await api('/api/import', { target_file: S.candidates.file, rows: picked });
-      toast(`Imported ${r.added} leads into ${r.file}`, 'ok');
-      S.candidates = null;
-      S.view = 'leads';
-      location.hash = 'leads';
-      await load(r.file);
-    } catch (e) { toast(e.message, 'err'); }
-  });
-
   if (S.view === 'activity') {
     api('/api/log').then((d) => {
       const el = $('#sendlog');
@@ -711,7 +680,7 @@ function wire() {
         return `<span class="${cls}">${esc(line)}</span>`;
       }).join('\n');
       el.scrollTop = el.scrollHeight;
-    }).catch(() => {});
+    }).catch(() => { });
   }
 }
 
@@ -733,5 +702,5 @@ if (TITLES[location.hash.slice(1)]) S.view = location.hash.slice(1);
 
 load().catch((e) => {
   $('#view').innerHTML = `<div class="card"><div class="empty">
-    <div class="big">⚠</div>Could not load data — ${esc(e.message)}</div></div>`;
+    <div class="big">⚠</div>Could not load data - ${esc(e.message)}</div></div>`;
 });

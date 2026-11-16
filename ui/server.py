@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Lead Desk — a local dashboard for the lead pipeline. Branding, sender identity
+Lead Desk - a local dashboard for the lead pipeline. Branding, sender identity
 and default search settings come from .env (see .env.example).
 
 Stdlib only, to match the rest of the project. Serves a single-page UI plus a
 small JSON API over the lead CSVs, and shells out to the existing scripts in
-scripts/ for the work they already do (Apify search, website enrichment, send).
+scripts/ for the work they already do (Apify search, website scrape, send).
 
     python3 ui/server.py [--port 8765] [--no-browser]
 """
@@ -13,10 +13,12 @@ import argparse
 import json
 import mimetypes
 import os
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import uuid
@@ -37,7 +39,7 @@ ROOT = Path(__file__).parent.parent
 STATIC = Path(__file__).parent / "static"
 SCRIPTS = ROOT / "scripts"
 
-# Background jobs (Apify runs, batch sends, /find-leads). id -> record.
+# Background jobs (find details, website enrichment, batch sends, /find-leads). id -> record.
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 # Live subprocesses for cancellable jobs. job id -> Popen.
@@ -72,19 +74,26 @@ def job_done(job_id, result=None, error=None):
         PROCS.pop(job_id, None)
 
 
-def job_stop(job_id):
-    """Cancel a running subprocess job (a /find-leads run can be long)."""
-    proc = PROCS.get(job_id)
-    if not proc:
-        return False
-    try:
-        proc.send_signal(signal.SIGINT)
-    except Exception:
-        return False
+def job_stopped(job_id):
     with JOBS_LOCK:
-        if JOBS.get(job_id):
-            JOBS[job_id]["stopped"] = True
-    job_log(job_id, "— stopped by user —")
+        return bool(JOBS.get(job_id, {}).get("stopped"))
+
+
+def job_stop(job_id):
+    """Cancel a long job (a /find-leads or find-details run). Flags the job so its loop
+    exits at the next check, and interrupts whatever subprocess it is running now."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job or job["state"] != "running":
+            return False
+        job["stopped"] = True
+    proc = PROCS.get(job_id)
+    if proc:
+        try:
+            proc.send_signal(signal.SIGINT)
+        except Exception:
+            pass
+    job_log(job_id, "- stopped by user -")
     return True
 
 
@@ -94,50 +103,9 @@ def run_in_thread(fn, *args):
 
 # ── Work performed on behalf of the UI ──────────────────────────────────────
 
-def do_apify_search(job_id, location, count, categories=""):
-    """Run scripts/apify_search.py and hold the candidates for review."""
-    out_path = ROOT / "leads" / f".apify_{job_id}.json"
-    cmd = [sys.executable, str(SCRIPTS / "apify_search.py"),
-           "--location", location, "--count", str(count), "--output", str(out_path)]
-    if categories:
-        cmd += ["--categories", categories]
-    job_log(job_id, f"$ {' '.join(cmd[1:])}")
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1)
-        for line in proc.stdout:
-            job_log(job_id, line.rstrip())
-        proc.wait()
-        if proc.returncode != 0:
-            job_done(job_id, error=f"apify_search.py exited {proc.returncode}")
-            return
-
-        items = json.loads(out_path.read_text(encoding="utf-8"))
-        out_path.unlink(missing_ok=True)
-
-        target = store.LEADS_DIR / f"{store.slugify_location(location)}_leads.csv"
-        known = {r["Company Name"].strip().lower() for r in store.read(target.name)}
-        candidates, dupes = [], 0
-        for item in items:
-            row = store.from_apify(item, location)
-            if not row["Company Name"]:
-                continue
-            if row["Company Name"].strip().lower() in known:
-                dupes += 1
-                continue
-            candidates.append(row)
-
-        job_log(job_id, f"{len(candidates)} new candidates, {dupes} already in file")
-        job_done(job_id, result={"file": target.name, "candidates": candidates,
-                                 "duplicates": dupes, "location": location})
-    except Exception as exc:
-        job_log(job_id, traceback.format_exc().strip().splitlines()[-1])
-        job_done(job_id, error=str(exc))
-
-
 FIND_LEADS_TAIL = {
     "research": (
-        "Stop after Step 5. Do NOT send any emails — skip Steps 6 and 7 entirely. "
+        "Stop after Step 5. Do NOT send any emails - skip Steps 6 and 7 entirely. "
         "Leave every finished lead at Status \"Ready to Send\" so it can be reviewed "
         "and sent from the dashboard."
     ),
@@ -150,7 +118,9 @@ def summarize_stream_event(event):
     kind = event.get("type")
 
     if kind == "system" and event.get("subtype") == "init":
-        return f"· session {event.get('session_id', '')[:8]} started"
+        model = event.get("model")
+        return (f"· session {event.get('session_id', '')[:8]} started"
+                + (f" on {model}" if model else ""))
 
     if kind == "assistant":
         lines = []
@@ -185,11 +155,11 @@ def do_find_leads(job_id, location, count, mode, categories=""):
     its own key rather than whichever account `claude` happens to be logged in as.
     """
     if not shutil.which("claude"):
-        job_done(job_id, error="The `claude` CLI is not on PATH — install Claude Code to run this.")
+        job_done(job_id, error="The `claude` CLI is not on PATH - install Claude Code to run this.")
         return
     api_key = store.load_env().get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        job_done(job_id, error="ANTHROPIC_API_KEY is not set in .env — add it to run /find-leads "
+        job_done(job_id, error="ANTHROPIC_API_KEY is not set in .env - add it to run /find-leads "
                                "from the dashboard.")
         return
 
@@ -202,24 +172,28 @@ def do_find_leads(job_id, location, count, mode, categories=""):
         f"Location: {location}\n"
         f"Lead count: {count}\n"
         f"{categories_line}\n"
-        f"The Step 2 questions are already answered by the values above — use them and "
+        f"The Step 2 questions are already answered by the values above - use them and "
         f"do not call AskUserQuestion.\n"
         f"{FIND_LEADS_TAIL.get(mode, FIND_LEADS_TAIL['research'])}"
     )
 
+    model = store.load_env().get("CLAUDE_MODEL", "").strip()
     cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--allowedTools", "Bash", "Read", "Write", "Edit",
     ]
+    if model:
+        cmd += ["--model", model]
     env = dict(os.environ, ANTHROPIC_API_KEY=api_key)
 
     job_log(job_id, f"$ claude -p /find-leads  ({location}, {count} leads, {mode})")
+    job_log(job_id, f"· model: {model or 'Claude Code default (CLAUDE_MODEL not set in .env)'}")
     job_log(job_id, f"· categories: {categories or 'defaults from .env'}")
     if mode == "research":
-        job_log(job_id, "· research only — no emails will be sent")
+        job_log(job_id, "· research only - no emails will be sent")
     else:
-        job_log(job_id, "· full run — this WILL send outreach emails")
+        job_log(job_id, "· full run - this WILL send outreach emails")
 
     try:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE,
@@ -249,6 +223,253 @@ def do_find_leads(job_id, location, count, mode, categories=""):
             return
         job_done(job_id, result={"location": location, "mode": mode})
     except Exception as exc:
+        job_done(job_id, error=str(exc))
+
+
+# ── Find details only (no Claude) ───────────────────────────────────────────
+#
+# Steps 3-5b of /find-leads done in plain Python: Apify search, website scrape,
+# contact details and a short factual summary. Nothing from 5c onwards - no sales
+# edges, no email copy, no follow-ups - so the rows land as "Draft - Needs Copy".
+
+GENERIC_MAILBOXES = {
+    "info", "contact", "contactus", "hello", "hi", "enquiries", "enquiry", "inquiries",
+    "inquiry", "sales", "admin", "office", "support", "help", "mail", "team", "welcome",
+    "reservations", "reservation", "bookings", "booking", "customercare", "care", "general",
+}
+FREE_MAIL_DOMAINS = {
+    "gmail.com", "yahoo.com", "yahoo.co.uk", "ymail.com", "hotmail.com", "hotmail.co.uk",
+    "outlook.com", "live.com", "icloud.com", "aol.com", "protonmail.com", "proton.me",
+}
+# The scraper's regex also matches things like "image@2x.png" - never an address.
+NOT_EMAIL_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js")
+
+
+def site_domain(url):
+    host = urlparse(url if "://" in url else f"https://{url}").netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def pick_email(scraped_emails, apify_email, website):
+    """The company's general contact address, chosen the way Step 5b of /find-leads
+    does: a generic mailbox on their own domain, then anything on their domain, then
+    the Google listing's email, then a mailbox on a free-mail provider (small firms
+    often publish only a Gmail address). Addresses on some third domain are skipped -
+    those are usually the web designer's or a partner's."""
+    emails, seen = [], set()
+    for raw in scraped_emails or []:
+        email = (raw or "").strip().strip(".,;:<>()")
+        low = email.lower()
+        if "@" not in email or low in seen or low.endswith(NOT_EMAIL_SUFFIXES):
+            continue
+        seen.add(low)
+        emails.append(email)
+
+    domain = site_domain(website) if website else ""
+    mailbox = lambda e: e.split("@")[0].lower().split("+")[0]  # noqa: E731
+    mail_domain = lambda e: e.split("@")[-1].lower()  # noqa: E731
+    own = [e for e in emails if domain and (mail_domain(e) == domain or mail_domain(e).endswith("." + domain))]
+    listing = (apify_email or "").strip()
+
+    for pool in (
+        [e for e in own if mailbox(e) in GENERIC_MAILBOXES],
+        own,
+        [listing] if listing and "@" in listing else [],
+        [e for e in emails if mail_domain(e) in FREE_MAIL_DOMAINS],
+    ):
+        if pool:
+            return pool[0]
+    return "Not found"
+
+
+def build_summary(item, scraped, location):
+    """A short factual summary from the data in hand. No LLM is involved, so it states
+    what the Google listing and the site's own description say rather than interpreting."""
+    category = (item.get("category") or "").strip() or "Business"
+    bits = [f"{category} in {location}, from its Google Maps listing."]
+
+    rating, reviews = item.get("google_rating"), item.get("google_review_count")
+    if rating or reviews:
+        reviews = reviews or 0
+        bits.append(f"Google rating {rating if rating else 'n/a'} from {reviews} review{'' if reviews == 1 else 's'}.")
+
+    if scraped is None:
+        bits.append("No website listed.")
+    elif scraped.get("error"):
+        bits.append("Website inaccessible.")
+    else:
+        about = " ".join((scraped.get("description") or scraped.get("title") or "").split())
+        if len(about) > 300:
+            about = about[:297].rsplit(" ", 1)[0] + "..."
+        if about:
+            bits.append(f"Website says: {about}")
+    return " ".join(bits)
+
+
+def details_row(item, scraped, location):
+    """Map one Apify record plus its scrape onto the lead columns Step 5b fills.
+    `scraped` is None when the listing has no website."""
+    website = (item.get("website") or "").strip()
+    scraped = scraped or {}
+    address = (item.get("address") or "").strip()
+    if address:
+        # Broadest to narrowest, as the workflow writes it: "Nigeria; Ibadan; <street>".
+        parts = [p.strip() for p in location.split(",") if p.strip()][::-1]
+        address = "; ".join(parts + [address])
+
+    email = pick_email(scraped.get("emails"), item.get("email"), website)
+    phone = ((scraped.get("phones") or [""])[0] or (item.get("phone") or "")).strip() or "Not found"
+    ceo = ((scraped.get("ceo_names") or [""])[0] or "").strip() or "Not identified"
+    return {
+        "Company Name": (item.get("name") or "").strip(),
+        "Company URL": website,
+        "Company Address": address,
+        "Company Email": email,
+        "Company Phone": phone,
+        "Company CEO": ceo,
+        "Company Summary": build_summary(item, scraped if website else None, location),
+        "Status": store.STATUS_DRAFT if store.has_email({"Company Email": email}) else store.STATUS_NO_EMAIL,
+    }
+
+
+def scrape_site(url, timeout=90):
+    """Run scripts/scrape_website.py and return its JSON; errors come back as {'error': ...}."""
+    try:
+        proc = subprocess.run([sys.executable, str(SCRIPTS / "scrape_website.py"), url],
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"error": f"timed out after {timeout}s"}
+    if not proc.stdout.strip():
+        return {"error": (proc.stderr or "scraper produced no output").strip().splitlines()[-1][:200]}
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"error": "scraper returned invalid JSON"}
+
+
+def scrape_for_details(job_id, url):
+    """Homepage first; if no email turned up, the contact pages Step 5a says to try next."""
+    data = scrape_site(url)
+    if data.get("error") or data.get("emails"):
+        return data
+    base = url.rstrip("/")
+    for path in ("/contact", "/contact-us", "/about-us"):
+        if job_stopped(job_id):
+            break
+        extra = scrape_site(base + path, timeout=60)
+        if extra.get("error"):
+            continue
+        for key in ("emails", "phones", "ceo_names"):
+            merged = list(dict.fromkeys((data.get(key) or []) + (extra.get(key) or [])))
+            data[key] = merged
+        if extra.get("emails"):
+            break
+    return data
+
+
+def run_apify(job_id, location, count, categories):
+    """Run scripts/apify_search.py, streaming its progress into the job log."""
+    fd, tmp = tempfile.mkstemp(prefix="leaddesk_apify_", suffix=".json")
+    os.close(fd)
+    args = ["--location", location, "--count", str(count)]
+    if categories:
+        args += ["--categories", categories]
+    cmd = [sys.executable, str(SCRIPTS / "apify_search.py")] + args + ["--output", tmp]
+    job_log(job_id, "$ " + shlex.join(["apify_search.py"] + args))
+    try:
+        proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        PROCS[job_id] = proc
+        for line in proc.stdout:
+            line = line.rstrip()
+            # Once cancelled, the script's interrupt traceback is just noise.
+            if line and not job_stopped(job_id):
+                job_log(job_id, line)
+        proc.wait()
+        PROCS.pop(job_id, None)
+        if job_stopped(job_id):
+            return []
+        if proc.returncode != 0:
+            raise RuntimeError(f"apify_search.py exited {proc.returncode}")
+        return json.loads(Path(tmp).read_text(encoding="utf-8") or "[]")
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def do_find_details(job_id, location, count, categories=""):
+    """Find lead details only: search, scrape, file - no outreach copy, nothing sent."""
+    if not store.load_env().get("APIFY_API_KEY", "").strip():
+        job_done(job_id, error="APIFY_API_KEY is not set in .env - add it to find leads.")
+        return
+
+    target = store.lead_file_for(location)
+    job_log(job_id, f"· find details only - {count} leads in {location}, no copy, nothing sent")
+    job_log(job_id, f"· categories: {categories or 'defaults from .env'}")
+    job_log(job_id, f"· leads file: leads/{target}")
+
+    added, no_email, duplicates = [], 0, 0
+    try:
+        # Ask Apify for a buffer, as Step 4 does: duplicates, dead listings and businesses
+        # with no findable email all fall out below, so ask for plenty.
+        items = run_apify(job_id, location, min(200, count * 4), categories)
+        known = {r["Company Name"].strip().lower() for r in store.read(target)}
+        candidates = []
+        for item in items:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            if name.lower() in known:
+                duplicates += 1
+                continue
+            known.add(name.lower())
+            candidates.append(item)
+        if not job_stopped(job_id):
+            job_log(job_id, f"· {len(candidates)} new candidate(s) from Apify, "
+                            f"{duplicates} already in {target}")
+            if len(candidates) < count:
+                job_log(job_id, f"· fewer than {count} new businesses found - try other categories "
+                                f"or a district inside {location} for more")
+
+        for item in candidates:
+            if job_stopped(job_id) or len(added) >= count:
+                break
+            n = f"[{len(added) + 1}/{count}]"
+            name, website = item["name"].strip(), (item.get("website") or "").strip()
+            scraped = None
+            if website:
+                job_log(job_id, f"→ {n} {name}: scraping {website}")
+                scraped = scrape_for_details(job_id, website)
+                if scraped.get("error"):
+                    job_log(job_id, f"✗ {name}: {scraped['error']} - using the Google listing only")
+            else:
+                job_log(job_id, f"– {n} {name}: no website listed - using the Google listing only")
+
+            row = details_row(item, scraped, location)
+            # Only leads with an email are worth filing - skip the rest and keep looking.
+            if not store.has_email(row):
+                no_email += 1
+                job_log(job_id, f"– {name}: no email found - skipped")
+                continue
+            if not store.append(target, [row]):
+                duplicates += 1
+                continue
+            added.append(row["Company Name"])
+            job_log(job_id, f"✓ {n} {name} - {row['Company Email']}, {row['Company Phone']}, "
+                            f"contact: {row['Company CEO']}")
+
+        stopped = job_stopped(job_id)
+        if not stopped and len(added) < count:
+            job_log(job_id, f"· only {len(added)} of {count} business(es) had an email - try other "
+                            f"categories or a district inside {location} for more")
+        job_log(job_id, f"Summary: {len(added)} lead(s) with an email saved to {target}, "
+                        f"{no_email} skipped for having no email, {duplicates} duplicate(s) skipped"
+                        + (" - stopped early" if stopped else ""))
+        job_done(job_id, result={
+            "file": target, "location": location, "added": len(added),
+            "skipped_no_email": no_email, "duplicates": duplicates, "stopped": stopped,
+        })
+    except Exception as exc:
+        job_log(job_id, f"✗ {exc}")
         job_done(job_id, error=str(exc))
 
 
@@ -330,7 +551,7 @@ def send_one(filename, lead_id, stage, dry_run):
 
     if dry_run:
         return {"ok": True, "name": name, "email": email, "dry_run": True,
-                "detail": "dry run — nothing sent"}
+                "detail": "dry run - nothing sent"}
 
     if not api_key:
         return {"ok": False, "name": name, "detail": "MAILTRAP_API_KEY not in .env"}
@@ -367,7 +588,7 @@ def do_batch_send(job_id, filename, lead_ids, stage, dry_run):
             mark = "· DRY   "
         else:
             mark = "✓ SENT  "
-        line = f"{mark} {outcome['name']} <{outcome.get('email', '—')}> — {outcome['detail']}"
+        line = f"{mark} {outcome['name']} <{outcome.get('email', '-')}> - {outcome['detail']}"
         job_log(job_id, line)
         log_lines.append(line)
         (sent if outcome["ok"] else failed).append(outcome["name"])
@@ -490,35 +711,24 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_thread(do_enrich, job_id, filename, ids)
                 return self._json({"job": job_id})
 
-            if path == "/api/discover":
-                location = (data.get("location") or "").strip()
-                count = max(1, min(200, int(data.get("count") or 10)))
-                categories = ", ".join(parse_categories(data.get("categories") or ""))
-                if not location:
-                    return self._json({"error": "location is required"}, 400)
-                job_id = new_job("discover", f"Searching Google Maps in {location}")
-                run_in_thread(do_apify_search, job_id, location, count, categories)
-                return self._json({"job": job_id})
-
             if path == "/api/find-leads":
                 location = (data.get("location") or "").strip()
                 count = max(1, min(200, int(data.get("count") or 10)))
                 categories = ", ".join(parse_categories(data.get("categories") or ""))
-                mode = data.get("mode") if data.get("mode") in ("research", "full") else "research"
+                mode = data.get("mode") if data.get("mode") in ("details", "research", "full") else "research"
                 if not location:
                     return self._json({"error": "location is required"}, 400)
+                if mode == "details":
+                    # Plain Python path: Apify + scraper, no Claude, no copy written.
+                    job_id = new_job("finddetails", f"Finding lead details in {location}")
+                    run_in_thread(do_find_details, job_id, location, count, categories)
+                    return self._json({"job": job_id})
                 job_id = new_job("findleads", f"/find-leads in {location}")
                 run_in_thread(do_find_leads, job_id, location, count, mode, categories)
                 return self._json({"job": job_id})
 
             if path == "/api/jobs/stop":
                 return self._json({"stopped": job_stop(data.get("id", ""))})
-
-            if path == "/api/import":
-                target = data.get("target_file")
-                rows = data.get("rows", [])
-                added = store.append(target, rows)
-                return self._json({"added": len(added), "file": Path(target).name})
 
             return self._json({"error": "not found"}, 404)
         except (ValueError, IndexError) as exc:

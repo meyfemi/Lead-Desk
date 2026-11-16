@@ -4,12 +4,12 @@ This guide takes you from a fresh Windows or Mac laptop to a working Lead Desk d
 at `http://127.0.0.1:8765`, with the Claude Code CLI set up to run the `/find-leads` workflow.
 
 - [What you need](#what-you-need)
-- [Part 1 — Copy the project to the laptop](#part-1--copy-the-project-to-the-laptop-both)
-- [Part 2 — Install and start Lead Desk](#part-2--install-and-start-lead-desk)
+- [Part 1 - Copy the project to the laptop](#part-1--copy-the-project-to-the-laptop-both)
+- [Part 2 - Install and start Lead Desk](#part-2--install-and-start-lead-desk)
   - [Windows](#windows)
   - [macOS](#macos)
-- [Part 3 — Set up the Claude Code CLI](#part-3--set-up-the-claude-code-cli-both)
-- [Part 4 — Check that everything works](#part-4--check-that-everything-works-both)
+- [Part 3 - Set up the Claude Code CLI](#part-3--set-up-the-claude-code-cli-both)
+- [Part 4 - Check that everything works](#part-4--check-that-everything-works-both)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -22,7 +22,7 @@ at `http://127.0.0.1:8765`, with the Claude Code CLI set up to run the `/find-le
 | **certifi** (a small Python package) | Strongly recommended | Lets the Apify and website-scraping scripts check HTTPS certificates. Without it they still run, but with certificate checks switched off. |
 | **curl** | Required for sending email | Emails go to Mailtrap through `curl`. It is already built into Windows 10/11 and macOS. |
 | **`.env` file** | Required | Company identity (`COMPANY_NAME`, `SENDER_NAME`, `MAIL_FROM_ADDRESS`), defaults, and the keys: `APIFY_API_KEY` for lead search, `MAILTRAP_API_KEY` for sending, `ANTHROPIC_API_KEY` for the dashboard's `/find-leads` button. Start from `.env.example`; see [CUSTOMIZING.md](CUSTOMIZING.md). |
-| **Claude Code CLI** | Required for `/find-leads` | Researches each company and writes the outreach emails. Needed both for typing `/find-leads` and for the dashboard's **Run the full workflow** button. See [Part 3](#part-3--set-up-the-claude-code-cli-both). |
+| **Claude Code CLI** | Required for `/find-leads` | Researches each company and writes the outreach emails. Needed both for typing `/find-leads` and for the dashboard's **Find leads** button in its two Claude scopes (the **Find details only** scope needs only the Apify key). See [Part 3](#part-3--set-up-the-claude-code-cli-both). |
 | **Claude Console API key** | Required for the dashboard's `/find-leads` | Put it in `.env` as `ANTHROPIC_API_KEY`. The dashboard passes it to Claude Code so each install pays through its own account. Typing `/find-leads` in a terminal can use this key or a claude.ai login (Pro, Max, Team or Enterprise). |
 | **Git for Windows** | Recommended, Windows only | Gives Claude Code a Bash shell, which is what the `/find-leads` steps are written for. |
 
@@ -36,7 +36,7 @@ Mac that already runs this project. Otherwise:
 
 ---
 
-## Part 1 — Copy the project to the laptop (both)
+## Part 1 - Copy the project to the laptop (both)
 
 The project isn't on GitHub or any other remote, so copy the folder across.
 
@@ -74,7 +74,7 @@ The project isn't on GitHub or any other remote, so copy the folder across.
 
 ---
 
-## Part 2 — Install and start Lead Desk
+## Part 2 - Install and start Lead Desk
 
 Follow the section for your operating system, then go on to Part 3.
 
@@ -263,7 +263,7 @@ Your browser opens at `http://127.0.0.1:8765`. Leave Terminal open while you use
 
 ---
 
-## Part 3 — Set up the Claude Code CLI (both)
+## Part 3 - Set up the Claude Code CLI (both)
 
 The `/find-leads` workflow runs inside **Claude Code**, Anthropic's command-line tool. You
 can start it in two ways, and both need the CLI installed and logged in on this laptop:
@@ -271,7 +271,7 @@ can start it in two ways, and both need the CLI installed and logged in on this 
 | Where you start it | What happens |
 |--------------------|--------------|
 | **In a terminal:** type `/find-leads` in Claude Code | Claude asks for the location, lead count and business categories. It asks your permission before it runs scripts or edits files, and shows each step as it works. |
-| **In Lead Desk:** Discover → **Run the full workflow** | The dashboard runs Claude Code in the background (`claude -p`) with permission to use Bash, Read, Write and Edit, authenticated with `ANTHROPIC_API_KEY` from `.env`. Progress streams to the Activity tab. |
+| **In Lead Desk:** Discover → **Find leads** | The dashboard runs Claude Code in the background (`claude -p`) with permission to use Bash, Read, Write and Edit, authenticated with `ANTHROPIC_API_KEY` from `.env`. Progress streams to the Activity tab. (The **Find details only** scope on the same card does not use Claude at all - it runs the Apify search and website scrape directly.) |
 
 Claude Code finds `/find-leads` in `.claude/commands/find-leads.md`, so always start
 Claude Code **from the project folder**.
@@ -366,7 +366,7 @@ To switch accounts later, type `/login`. To sign out, type `/logout`.
 
 > **Which account pays?** Runs started from the dashboard always use `ANTHROPIC_API_KEY`
 > from `.env`, whatever you're logged in as here. Runs you start by typing `claude` use this
-> login — unless an `ANTHROPIC_API_KEY` environment variable is set on the laptop, in which
+> login - unless an `ANTHROPIC_API_KEY` environment variable is set on the laptop, in which
 > case Claude Code uses that key instead. Keep the key in `.env` only, not in your shell
 > profile, unless you mean every terminal run to bill through it too.
 
@@ -406,15 +406,18 @@ terminal window** so it can find `claude`.
 
 **Option B: from Lead Desk**
 
-1. Open the **Discover** tab. **Run the full workflow** should be enabled, with no red "The
+1. Open the **Discover** tab. The **Find leads** button should be enabled, with no red "The
    claude CLI was not found on PATH" note.
 2. Enter the location and lead count.
 3. Choose a scope:
+   - **Find details only**: no Claude. Searches Google Maps via Apify and scrapes each
+     website for the contact email, phone, a named contact and a short summary. Writes no
+     emails and sends nothing; leads end up as `Draft - Needs Copy`. Needs only the Apify key.
    - **Research & draft only** (default): stops before sending. Leads end up as
      `Ready to Send` for you to review.
    - **Research, draft and send**: sends emails at the end, without asking again.
-4. Watch progress on the **Activity** tab. When the run finishes, the last line shows how
-   many turns it took and what it cost.
+4. Watch progress on the **Activity** tab. When a Claude run finishes, the last line shows
+   how many turns it took and what it cost.
 
 > **Windows limitation:** the **Stop run** button doesn't stop a run on Windows, because the
 > server sends a stop signal that only works on Mac and Linux. To stop a run, end
@@ -435,7 +438,7 @@ away, run `claude update`. If you installed with WinGet, run
 
 ---
 
-## Part 4 — Check that everything works (both)
+## Part 4 - Check that everything works (both)
 
 Run these checks with Lead Desk open in your browser.
 
@@ -456,8 +459,9 @@ Run these checks with Lead Desk open in your browser.
    address and click **Dry run**. It reports what *would* be sent.
    Don't test with a real send, because these are real businesses.
 5. **Claude Code logged in:** `claude -p "Reply with the single word: ready"` prints `ready`.
-6. **Claude Code found by Lead Desk:** on the **Discover** tab, **Run the full workflow** is
-   enabled and there's no red note about the `claude` CLI or `ANTHROPIC_API_KEY`.
+6. **Claude Code found by Lead Desk:** on the **Discover** tab, with the scope set to
+   **Research & draft only**, **Run /find-leads** is enabled and there's no red note about
+   the `claude` CLI or `ANTHROPIC_API_KEY`.
 
 If all six pass, the laptop is ready.
 
@@ -475,7 +479,7 @@ If all six pass, the laptop is ready.
 | The browser says it can't connect, or the terminal shows `Address already in use` / `WinError 10048` | Another program is using port 8765. Start with `--port 9000` and open `http://127.0.0.1:9000`. |
 | **Enrich** says "nothing new found" for every lead (Windows) | UTF-8 mode is off. Redo step W2 and reopen your terminal. |
 | `CERTIFICATE_VERIFY_FAILED` or other SSL errors | Mac: run **Install Certificates.command** from Applications → Python 3.x. Both: run the certifi install step again. |
-| Sends fail with `curl not found — install curl to send emails` | Windows: run Windows Update; curl ships with Windows 10 (version 1803 and later) and Windows 11. |
+| Sends fail with `curl not found - install curl to send emails` | Windows: run Windows Update; curl ships with Windows 10 (version 1803 and later) and Windows 11. |
 | Sends fail with a Mailtrap domain or sender error | `MAIL_FROM_ADDRESS` must be on a domain verified in your Mailtrap account. |
 | `./start-ui.sh: Permission denied` (Mac) | Run `chmod +x start-ui.sh`, or start with `python3 ui/server.py`. |
 
