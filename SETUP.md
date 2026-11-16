@@ -23,7 +23,7 @@ at `http://127.0.0.1:8765`, with the Claude Code CLI set up to run the `/find-le
 | **curl** | Required for sending email | Emails go to Mailtrap through `curl`. It is already built into Windows 10/11 and macOS. |
 | **`.env` file** | Required | Company identity (`COMPANY_NAME`, `SENDER_NAME`, `MAIL_FROM_ADDRESS`), defaults, and the keys: `APIFY_API_KEY` for lead search, `MAILTRAP_API_KEY` for sending, `ANTHROPIC_API_KEY` for the dashboard's `/find-leads` button. Start from `.env.example`; see [CUSTOMIZING.md](CUSTOMIZING.md). |
 | **Claude Code CLI** | Required for `/find-leads` | Researches each company and writes the outreach emails. Needed both for typing `/find-leads` and for the dashboard's **Find leads** button in its two Claude scopes (the **Find details only** scope needs only the Apify key). See [Part 3](#part-3--set-up-the-claude-code-cli-both). |
-| **Claude Console API key** | Required for the dashboard's `/find-leads` | Put it in `.env` as `ANTHROPIC_API_KEY`. The dashboard passes it to Claude Code so each install pays through its own account. Typing `/find-leads` in a terminal can use this key or a claude.ai login (Pro, Max, Team or Enterprise). |
+| **Claude Console API key** | Required for the dashboard's `/find-leads` | Put it in `.env` as `ANTHROPIC_API_KEY`. The dashboard passes it to Claude Code so each install pays through its own account. Typing `/find-leads` in a terminal bills the same Console account. |
 | **Git for Windows** | Recommended, Windows only | Gives Claude Code a Bash shell, which is what the `/find-leads` steps are written for. |
 
 Before you start, have your API keys to hand. The easiest source is the `.env` file on the
@@ -281,10 +281,7 @@ Claude Code **from the project folder**.
 For the dashboard's **Run the full workflow** button you need a **Claude Console** account
 (pay-as-you-go API billing) and its API key in `.env` as `ANTHROPIC_API_KEY`. Create one at
 console.anthropic.com → Settings → API keys. The dashboard refuses to start a run without it.
-
-For typing `/find-leads` in a terminal you can use that same key, or log in with a
-**Claude Pro, Max, Team or Enterprise** plan (claude.ai). The free Claude.ai plan doesn't
-include Claude Code. Each `/find-leads` run takes about 15–40 minutes.
+Terminal runs use the same Console account. Each `/find-leads` run takes about 15–40 minutes.
 
 ### C2. Windows only: install Git for Windows
 
@@ -355,7 +352,7 @@ cd ~/Development/"Lead Scraper Apify"
 claude
 ```
 
-1. A browser window opens. Sign in with your Claude or Console account. If the browser doesn't
+1. A browser window opens. Sign in with your Claude Console account. If the browser doesn't
    open, press **c** to copy the login link and paste it into your browser.
 2. The terminal shows **Login successful**. Press **Enter**.
 3. When Claude Code asks whether you trust the files in this folder, choose **Yes**.
@@ -363,12 +360,6 @@ claude
 5. Type `/exit` to leave, or carry straight on to C7.
 
 To switch accounts later, type `/login`. To sign out, type `/logout`.
-
-> **Which account pays?** Runs started from the dashboard always use `ANTHROPIC_API_KEY`
-> from `.env`, whatever you're logged in as here. Runs you start by typing `claude` use this
-> login - unless an `ANTHROPIC_API_KEY` environment variable is set on the laptop, in which
-> case Claude Code uses that key instead. Keep the key in `.env` only, not in your shell
-> profile, unless you mean every terminal run to bill through it too.
 
 ### C6. Test the background mode the dashboard uses
 
@@ -490,9 +481,8 @@ If all six pass, the laptop is ready.
 | `claude` is not recognized / `command not found` | Open a new terminal. If it still fails, add the install folder to your PATH (see C4), then run `claude doctor`. |
 | **Run the full workflow** is disabled with "The claude CLI was not found on PATH" | The CLI isn't installed, or Lead Desk was started from a terminal opened *before* you installed it. Check `claude --version` in a new terminal, then restart Lead Desk from that terminal. Windows: make sure you used the native installer, not npm. Installing only the VS Code extension doesn't count. |
 | Claude says `/find-leads` is an unknown command | You started `claude` outside the project folder, or `.claude/commands/find-leads.md` didn't come across. `cd` into the project folder and start again. On Windows, check the hidden `.claude` folder is there. |
-| A dashboard run fails straight away with `claude exited 1` | Claude Code usually isn't logged in. Run `claude -p "Reply with the single word: ready"` in a terminal; if you see a login error, run `claude` and log in (C5). |
+| A dashboard run fails straight away with `claude exited 1` | Usually a problem with `ANTHROPIC_API_KEY` in `.env`: it's mistyped, revoked, or the Console account is out of credit. Check the key at console.anthropic.com → Settings → API keys and your balance under Billing, then restart Lead Desk. |
 | `Login expired · Please run /login` | Run `claude` in a terminal, type `/login` and sign in again. |
-| Runs are billed to an API key instead of your Claude plan | An `ANTHROPIC_API_KEY` environment variable is set. Remove it, open a new terminal, and check `/status` inside Claude Code. |
 | Claude Code can't find Git Bash (Windows) | Open (or create) `%USERPROFILE%\.claude\settings.json` and add the snippet below, pointing at your Git install. Then restart Claude Code. |
 | A `/find-leads` run from the dashboard ends with an error (Windows) | Check that UTF-8 mode is on (W2), then confirm you're logged in with the `claude -p` test (C6). |
 | **Stop run** does nothing (Windows) | Known limitation: end **claude.exe** in Task Manager, or close Lead Desk's PowerShell window. |

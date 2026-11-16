@@ -55,7 +55,7 @@ The two Claude scopes pass the location, lead count and categories in, so the wo
 skips its opening questions rather than stalling on a prompt nobody can answer. They need
 the `claude` CLI on PATH and `ANTHROPIC_API_KEY` in `.env`; the button is disabled with a
 note if either is missing. The key is passed to the CLI for that run only, so each install
-bills its own account regardless of which claude.ai login the machine has. The run is
+bills its own account. The run is
 granted Bash, Read, Write and Edit - what the workflow needs, nothing else.
 `CLAUDE_MODEL` in `.env` picks the model for these runs (blank uses Claude Code's default);
 the run output names the model on its first lines.
