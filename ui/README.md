@@ -1,90 +1,172 @@
 # Lead Desk
 
-A local dashboard over the lead pipeline. Stdlib Python only - nothing to install.
+Lead Desk is a small dashboard that runs on your own computer. It helps you:
+
+1. **Find businesses** in a city (for example, "restaurants and clinics in Lagos") using Google Maps.
+2. **Collect their details**: website, email, phone, address and a short summary.
+3. **Write a personal outreach email** for each one with Claude.
+4. **Send the emails and follow-ups**, and keep track of who you've contacted.
+
+All your leads are saved as plain CSV files in the `leads/` folder. You can open them
+in Excel or Google Sheets at any time.
+
+---
+
+## How it works
+
+```
+Pick a city + business types
+        │
+        ▼
+Apify searches Google Maps  ──►  Each website is scanned for contact details
+        │
+        ▼
+Claude researches each business and writes an email
+        │
+        ▼
+You review the emails in Lead Desk  ──►  Send through Mailtrap
+```
+
+It uses three outside services. You need an account and API key for each:
+
+| Service | What it does | Needed for |
+|---------|--------------|------------|
+| [Apify](https://console.apify.com) | Searches Google Maps for businesses | Finding leads |
+| [Anthropic Console](https://console.anthropic.com) | Claude writes the emails | Writing emails |
+| [Mailtrap](https://mailtrap.io) | Sends the emails | Sending |
+
+---
+
+## Install
+
+You need **Python 3.10 or newer**. Check with `python3 --version` (Mac) or
+`python --version` (Windows).
+
+**1. Install the Python packages.** In a terminal, inside the project folder:
 
 ```bash
-./start-ui.sh                 # opens http://127.0.0.1:8765
-./start-ui.sh --port 9000     # different port
-./start-ui.sh --no-browser    # don't auto-open a browser
+python3 -m pip install -r requirements.txt     # Mac
+python -m pip install -r requirements.txt      # Windows
 ```
 
-## What it does
+**2. Create your settings file.** Copy `.env.example` to `.env`:
 
-The lead CSVs in `leads/` stay the single source of truth. The dashboard reads and
-rewrites those same files, so it and the `/find-leads` workflow can be used
-interchangeably - run the workflow from here or from Claude Code, and send from either.
+```bash
+cp .env.example .env
+```
 
-| View | Purpose |
-|------|---------|
-| **Overview** | Pipeline counts, status breakdown, outreach volume, follow-ups due |
-| **Leads** | Search and filter every lead; select rows for bulk enrich / dry-run / send |
-| **Follow-ups** | Leads whose Followup 1 or 2 date has arrived, with overdue flags |
-| **Discover** | Find leads for a location, lead count and categories: details only (Apify + scrape, no copy) or the whole `/find-leads` workflow |
-| **Activity** | Live output of the running job, plus `leads/send_log.txt` |
-
-Click any row to open the lead drawer: full summary and sales edges, editable subject
-and body, contact details, status, and follow-up dates. The drawer knows which touch a
-lead is on - for a lead already sent and due for follow-up 1, it edits the follow-up
-body and sends that instead of the first mail.
-
-## Finding leads
-
-The **Find leads** card on Discover takes a location, lead count and business categories.
-Categories are comma-separated and replace `DEFAULT_CATEGORIES` from `.env` for that run;
-the field is pre-filled with the defaults so you can edit rather than retype. Progress
-streams into the console, a line per step, with a **Stop run** button.
-
-Three scopes:
-
-- **Find details only** - no Claude involved. The server runs `scripts/apify_search.py`,
-  then `scripts/scrape_website.py` on each website (homepage, then the contact pages if no
-  email turned up), and files each company with its URL, address, general contact email,
-  phone, a named contact if the site shows one, and a short factual summary built from the
-  Google listing and the site's own description. Nothing from Step 5c onwards happens: no
-  sales edges, no subject, no email body, no follow-ups. Rows land at `Draft - Needs Copy`;
-  businesses with no email address are skipped and not saved. Needs only `APIFY_API_KEY`; usually
-  5–15 minutes, most of it the Apify run. Red-flag qualification is not applied, so skim
-  the new rows.
-- **Research & draft only** (default) - runs the `/find-leads` workflow through the `claude`
-  CLI and stops after Step 5. Nothing is sent; leads land at `Ready to Send` for you to
-  read and dispatch from the Leads tab. Expect 15–40 minutes.
-- **Research, draft and send** - the full workflow including Steps 6 and 7. Emails go
-  out at the end of the run without a further prompt, so the UI confirms up front.
-
-The two Claude scopes pass the location, lead count and categories in, so the workflow
-skips its opening questions rather than stalling on a prompt nobody can answer. They need
-the `claude` CLI on PATH and `ANTHROPIC_API_KEY` in `.env`; the button is disabled with a
-note if either is missing. The key is passed to the CLI for that run only, so each install
-bills its own account. The run is
-granted Bash, Read, Write and Edit - what the workflow needs, nothing else.
-`CLAUDE_MODEL` in `.env` picks the model for these runs (blank uses Claude Code's default);
-the run output names the model on its first lines.
-
-Rows written by **Find details only** have no copy, so a later `/find-leads` run skips them
-as duplicates. Write their emails by hand from the lead drawer, or ask Claude Code to draft
-copy for the `Draft - Needs Copy` rows in that file.
-
-## Sending
-
-Sends go through the same Mailtrap path as `scripts/send_leads.py` and append to
-`leads/send_log.txt`. Guards, in order:
-
-- **Dry run** - runs the whole path and reports what would go out, sending nothing.
-- A real send always asks for confirmation and names every recipient.
-- Leads with no email address, or with an empty subject or body, are never sent and
-  are reported as skipped.
-- On success the row's Status and Date Contacted are updated; on failure the row is
-  marked `Send Failed`.
-
-The three dots at the bottom of the sidebar show whether `APIFY_API_KEY`,
-`MAILTRAP_API_KEY` and `ANTHROPIC_API_KEY` were found in `.env`. The company name in the
-sidebar, the From: name on every send, and the pre-filled location and categories on
-Discover all come from `.env` too - see [CUSTOMIZING.md](../CUSTOMIZING.md).
-
-## Layout
+Open `.env` and fill in your details and keys:
 
 ```
-ui/server.py    HTTP server + JSON API; shells out to scripts/ for the real work
-ui/store.py     CSV read/write, status vocabulary, stats, follow-up scheduling
-ui/static/      index.html, app.js, styles.css - no build step, no dependencies
+COMPANY_NAME=Your Company
+SENDER_NAME=Your first name
+MAIL_FROM_ADDRESS=you@yourcompany.com     # must be verified in Mailtrap
+DEFAULT_LOCATION=Lagos, Nigeria
+DEFAULT_CATEGORIES=restaurant, clinic, law firm
+APIFY_API_KEY=...
+MAILTRAP_API_KEY=...
+ANTHROPIC_API_KEY=...
 ```
+
+**3. Start Lead Desk.**
+
+```bash
+./start-ui.sh            # Mac / Linux
+python ui\server.py      # Windows
+```
+
+Your browser opens at **http://127.0.0.1:8765**. Keep the terminal open while you use it,
+and press **Ctrl + C** to stop.
+
+> Setting up a new laptop, or using Windows? Follow the step-by-step guide in
+> [SETUP.md](../SETUP.md). It covers installing Python, a Windows-only UTF-8 setting you
+> shouldn't skip, and fixes for common problems.
+
+**Check it's working:** the three dots at the bottom of the sidebar (Apify, Mailtrap,
+Claude) should all be green. A red dot means that key is missing from `.env`.
+
+---
+
+## Using Lead Desk
+
+The sidebar has five pages:
+
+| Page | What it's for |
+|------|---------------|
+| **Overview** | Totals at a glance: leads, emails sent, follow-ups due |
+| **Leads** | Search and filter all your leads. Click a row to view or edit it |
+| **Follow-ups** | Leads that are due a follow-up email today |
+| **Discover** | Find new leads |
+| **Activity** | Live progress of the current run, and a log of sent emails |
+
+### Finding leads
+
+On **Discover**, enter a location, how many leads you want, and the business types.
+Then choose one of three options:
+
+| Option | What happens | Keys needed |
+|--------|--------------|-------------|
+| **Find details only** | Collects contact details. No emails written. | Apify |
+| **Research & draft only** *(default)* | Collects details and Claude writes each email. Nothing is sent. | Apify + Claude |
+| **Research, draft and send** | Does everything, then sends the emails straight away. | All three |
+
+A run usually takes 5–15 minutes. You can follow it on the **Activity** page and stop it
+at any time with **Stop run**.
+
+Good to know:
+
+- Businesses without an email address are skipped.
+- "Lead count" means the number of *usable* leads to save. If too many are filtered out,
+  Lead Desk searches again (up to 4 times). Extra searches use more Apify credit.
+- Claude skips businesses that don't fit, based on the rules in `target_businesses.md`.
+- Each email is checked for length and tone. If it still fails after two rewrites, the
+  lead is saved as **Draft - Needs Copy** so you can fix it by hand.
+
+### Sending emails
+
+Click a lead to open it. You can edit the subject and email, then:
+
+- **Dry run** shows what would be sent, without sending anything. Use this to test.
+- **Send** always asks you to confirm first and lists every recipient.
+
+After sending, the lead's status and date are updated automatically. Follow-up emails
+appear on the **Follow-ups** page when they're due.
+
+---
+
+## Make it your own
+
+To use Lead Desk for a different business, edit these three files. No coding needed.
+
+| File | What to put in it |
+|------|-------------------|
+| `.env` | Your company name, sender, default city and business types, API keys |
+| `our_offer.md` | What your company offers. Claude uses this when writing emails |
+| `target_businesses.md` | Who you want to reach, and who to avoid |
+
+See [CUSTOMIZING.md](../CUSTOMIZING.md) for more detail.
+
+To choose which Claude model writes the emails, set `CLAUDE_MODEL` in `.env`
+(for example `claude-haiku-5-5` is the cheapest). Leave it blank to use `claude-opus-5-5`.
+
+---
+
+## Project files
+
+```
+leads/                 Your leads (one CSV per city) and send_log.txt
+scripts/               The scripts that search, scrape, write and send
+ui/server.py           The Lead Desk web server
+ui/store.py            Reads and writes the lead CSV files
+ui/static/             The dashboard's web page (HTML, CSS, JavaScript)
+start-ui.sh            Starts Lead Desk on Mac / Linux
+```
+
+**For developers:** the email-writing rules live in two places:
+`scripts/write_outreach.py` (used by Lead Desk) and `.claude/commands/find-leads.md`
+(used by the `/find-leads` command in Claude Code). If you change one, change the other.
+
+---
+
+> **Keep `.env` private.** It holds your live API keys. Never share it or upload it to a
+> public repository.

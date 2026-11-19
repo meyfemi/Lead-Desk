@@ -6,8 +6,8 @@ edit three files, all at the project root. No code changes.
 | File | What it holds | Who reads it |
 |------|---------------|--------------|
 | `.env` | Company name, sender name, from-address, default location and categories, API keys | Every script, the dashboard, and `/find-leads` |
-| `our_offer.md` | What the company does, its value propositions, tone | `/find-leads`, when it writes the benefit paragraph of each email |
-| `target_businesses.md` | Who to target, what qualifies them, the signals to look for, red flags | `/find-leads`, when it qualifies companies and writes their Sales Edges |
+| `our_offer.md` | What the company does, its value propositions, tone | The dashboard's **Find leads** and `/find-leads`, when they write the benefit paragraph of each email |
+| `target_businesses.md` | Who to target, what qualifies them, the signals to look for, red flags | The dashboard's **Find leads** and `/find-leads`, when they qualify companies and write their Sales Edges |
 
 ## 1. `.env`
 
@@ -45,7 +45,7 @@ And the three keys:
 |-----|-----------|
 | `APIFY_API_KEY` | Finding businesses on Google Maps |
 | `MAILTRAP_API_KEY` | Sending email |
-| `ANTHROPIC_API_KEY` | Running `/find-leads` from the dashboard. The dashboard hands it to the `claude` CLI so each install bills its own account. |
+| `ANTHROPIC_API_KEY` | Writing the outreach emails when you click **Find leads** in the dashboard. Each install bills its own Claude Console account. |
 
 ## 2. `our_offer.md`
 
@@ -69,7 +69,7 @@ pricing or services page", "a 'we're hiring' notice but no company registration 
   shows the company name, and all three key dots are green.
 - The Discover tab pre-fills your default location and categories.
 - Open any lead and click **Dry run** - the output shows the new From: name.
-- Run `/find-leads` for a small count (2–3) in research mode and read the drafts before
-  sending anything.
+- On Discover, run **Research & draft only** for a small count (2–3) and read the drafts
+  before sending anything.
 
 The `leads/` folder is per-install and ignored by git, so a fresh copy starts empty.

@@ -2,7 +2,7 @@
 
 const S = {
   files: [], file: null, leads: [], stats: null, timeline: [], followups: [],
-  statuses: [], today: '', mail: false, apify: false, claudeCli: false, claudeKey: false,
+  statuses: [], today: '', mail: false, apify: false, claudeSdk: false, claudeKey: false,
   identity: { company_name: '', default_location: '', default_categories: [] },
   view: 'overview', query: '', filter: 'all', selection: new Set(),
   openLead: null, job: null, jobPoll: null,
@@ -53,7 +53,7 @@ async function load(file) {
     files: d.files, file: d.file, leads: d.leads, stats: d.stats,
     timeline: d.timeline, followups: d.followups, statuses: d.statuses,
     today: d.today, mail: d.mail_configured, apify: d.apify_configured,
-    claudeCli: d.claude_cli, claudeKey: d.claude_key_configured,
+    claudeSdk: d.claude_sdk, claudeKey: d.claude_key_configured,
     identity: d.identity || S.identity,
   });
   S.selection = new Set([...S.selection].filter((i) => i < S.leads.length));
@@ -162,9 +162,8 @@ function viewOverview() {
           <div class="legend">${legend}</div>
           ${drafts ? `<p class="hint" style="margin:18px 0 0">
             <b>${drafts}</b> lead${drafts > 1 ? 's have' : ' has'} no outreach copy yet.
-            Open each one from the Leads tab to write it, or ask Claude Code to draft copy for the
-            “Draft - Needs Copy” rows in this file. (A new <span class="kbd">/find-leads</span> run
-            skips companies already in the file.)</p>` : ''}
+            Open each one from the Leads tab to write or fix it. (A new Find leads run skips
+            companies already in the file.)</p>` : ''}
         </div>
       </div>
 
@@ -310,12 +309,12 @@ function viewFollowups() {
 }
 
 /* ── Discover ────────────────────────────────────────────── */
-/* "details" runs Apify + the scraper straight from the server; the other two run
-   /find-leads through the claude CLI. */
+/* "details" runs Apify + the scraper straight from the server; the other two also have
+   the server call the Claude API to qualify each lead and write its outreach. */
 const SCOPES = {
   details: { label: 'Find details only', button: 'Find details', running: 'Finding…', engine: 'Apify + website scrape' },
-  research: { label: 'Research & draft only', button: 'Run /find-leads', running: 'Running…', engine: '/find-leads via Claude Code' },
-  full: { label: 'Research, draft and send', button: 'Run /find-leads', running: 'Running…', engine: '/find-leads via Claude Code' },
+  research: { label: 'Research & draft only', button: 'Find leads', running: 'Running…', engine: 'Apify + Claude API' },
+  full: { label: 'Research, draft and send', button: 'Find leads', running: 'Running…', engine: 'Apify + Claude API' },
 };
 const DISCOVER_JOBS = ['findleads', 'finddetails', 'pending'];
 
@@ -335,13 +334,14 @@ function viewDiscover() {
   const scope = SCOPES[f.mode];
   const isDetails = f.mode === 'details';
   const running = S.job && S.job.state === 'running' && DISCOVER_JOBS.includes(S.job.kind);
-  const ready = isDetails ? S.apify : (S.claudeCli && S.claudeKey);
+  const ready = isDetails ? S.apify : (S.apify && S.claudeSdk && S.claudeKey);
 
   const red = (msg) => `<br><span style="color:var(--red)">${msg}</span>`;
   const missing = isDetails
     ? (S.apify ? '' : red('APIFY_API_KEY is missing from .env - required to find details.'))
-    : (S.claudeCli ? '' : red('The <b>claude</b> CLI was not found on PATH.'))
-      + (S.claudeKey ? '' : red('ANTHROPIC_API_KEY is missing from .env - required to run /find-leads from here.'));
+    : (S.apify ? '' : red('APIFY_API_KEY is missing from .env - required to find leads.'))
+      + (S.claudeSdk ? '' : red('The <b>anthropic</b> Python package is not installed - run <span class="kbd">pip install -r requirements.txt</span> and restart Lead Desk.'))
+      + (S.claudeKey ? '' : red('ANTHROPIC_API_KEY is missing from .env - required to write outreach copy.'));
 
   const explain = isDetails
     ? `<b>Find details only</b> searches Google Maps through Apify, then scrapes each website
@@ -349,10 +349,12 @@ function viewDiscover() {
        outreach copy and sends nothing: leads are filed as “Draft - Needs Copy”, and businesses
        with no email address are skipped entirely. Claude is not involved, so it costs only Apify
        credits and usually finishes in 5–15 minutes.`
-    : `The run searches, scrapes each website, writes company-specific outreach copy and files
-       every lead into the CSV - the same workflow as typing <span class="kbd">/find-leads</span>
-       in Claude Code. Expect 15–40 minutes. <b>Research &amp; draft</b> stops before sending and
-       leaves the leads at “Ready to Send” for you to review here.`;
+    : `The run searches Google Maps, scrapes each website, then has Claude check each company
+       against your red flags and write its summary, sales edges and first email. Leads are filed
+       at “Ready to Send”; any whose copy fails a quality check is filed as “Draft - Needs Copy”
+       for you to fix. Most of the time is the Apify search (5–15 minutes). <b>Research &amp;
+       draft</b> stops there so you can review; <b>Research, draft and send</b> also sends the new
+       emails and any follow-ups that are due.`;
 
   return `
     <div class="card" style="margin-bottom:14px">
@@ -553,7 +555,7 @@ async function pollJob(id) {
         toast(`${sent.length} ${dry_run ? 'would send' : 'sent'}, ${failed.length} failed`,
           failed.length ? 'err' : 'ok');
       } else if (job.kind === 'findleads' && job.result) {
-        toast(job.result.stopped ? '/find-leads run stopped' : '/find-leads run finished',
+        toast(job.result.stopped ? 'Find leads run stopped' : `Find leads finished - ${job.result.added} written`,
           job.result.stopped ? '' : 'ok');
       } else if (job.kind === 'finddetails' && job.result) {
         const r = job.result;
@@ -656,7 +658,7 @@ function wire() {
     const mode = $('#fl-mode', v).value;
     if (!location) return toast('Enter a location', 'err');
     if (mode === 'full' && !confirm(
-      `Run /find-leads for ${count} leads in ${location} AND send the outreach emails?\n\n`
+      `Find ${count} leads in ${location} AND send the outreach emails?\n\n`
       + 'Real emails go out at the end of the run without a further prompt.')) return;
     startJob('/api/find-leads', { location, count, mode, categories });
   });
