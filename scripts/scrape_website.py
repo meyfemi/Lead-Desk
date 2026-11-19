@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Website scraper — extracts CEO name, contact email, phone, and key page text
+Website scraper - extracts CEO name, contact email, phone, and key page text
 from a business website to enrich lead data before writing outreach emails.
 """
 import json
@@ -34,18 +34,37 @@ PHONE_RE = re.compile(
 
 
 class PageParser(HTMLParser):
-    """Extracts visible text, mailto links, and tel links from HTML."""
+    """Extracts visible text, mailto/tel links, the <title> and meta description."""
 
-    SKIP_TAGS = {"script", "style", "noscript", "svg", "head"}
+    SKIP_TAGS = {"script", "style", "noscript", "svg"}
 
     def __init__(self):
         super().__init__()
         self._skip_depth = 0
+        self._in_head = False
+        self._in_title = False
+        self.title = ""
+        self.description = ""
         self.text_blocks = []
         self.emails_from_links = []
         self.phones_from_links = []
 
     def handle_starttag(self, tag, attrs):
+        if tag == "head":
+            self._in_head = True
+            return
+        if tag == "title" and self._in_head:
+            self._in_title = True
+            return
+        if tag == "meta":
+            attrs_dict = {k.lower(): (v or "") for k, v in attrs}
+            key = (attrs_dict.get("name") or attrs_dict.get("property") or "").lower()
+            content = " ".join(attrs_dict.get("content", "").split())
+            if content and key in ("description", "og:description", "twitter:description"):
+                # Plain description wins; the social variants only fill a gap.
+                if not self.description or key == "description":
+                    self.description = content
+            return
         if tag in self.SKIP_TAGS:
             self._skip_depth += 1
             return
@@ -60,14 +79,22 @@ class PageParser(HTMLParser):
                 self.phones_from_links.append(href[4:].strip())
 
     def handle_endtag(self, tag):
-        if tag in self.SKIP_TAGS:
+        if tag == "head":
+            self._in_head = False
+        elif tag == "title":
+            self._in_title = False
+        elif tag in self.SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
 
     def handle_data(self, data):
-        if self._skip_depth == 0:
-            text = data.strip()
-            if len(text) > 1:
-                self.text_blocks.append(text)
+        if self._in_title:
+            self.title = (self.title + " " + data).strip()
+            return
+        if self._in_head or self._skip_depth:
+            return
+        text = data.strip()
+        if len(text) > 1:
+            self.text_blocks.append(text)
 
     def get_text(self):
         return " ".join(self.text_blocks)
@@ -126,6 +153,8 @@ def extract_ceo_names(text):
 def scrape(url):
     result = {
         "url": url,
+        "title": "",
+        "description": "",
         "emails": [],
         "phones": [],
         "ceo_names": [],
@@ -142,6 +171,8 @@ def scrape(url):
     parser = PageParser()
     parser.feed(homepage_html)
     text = parser.get_text()
+    result["title"] = parser.title
+    result["description"] = parser.description
 
     # Try contact/about page if homepage is sparse
     if len(text) < 500 or not (parser.emails_from_links or EMAIL_RE.search(text)):
